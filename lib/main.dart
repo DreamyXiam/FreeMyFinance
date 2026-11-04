@@ -37,6 +37,16 @@ int? parseAmount(String value) {
       int.parse(p.length > 1 ? p[1].padRight(2, '0') : '0');
 }
 
+int? parseRate(String value) {
+  final s = value.trim();
+  if (!RegExp(r'^\d{1,4}(\.\d{1,6})?$').hasMatch(s)) return null;
+  final parts = s.split('.');
+  final n =
+      int.parse(parts[0]) * 1000000 +
+      int.parse(parts.length > 1 ? parts[1].padRight(6, '0') : '0');
+  return n > 0 && n <= 1000000000 ? n : null;
+}
+
 int? parseSignedAmount(String value) {
   final text = value.trim();
   if (!text.startsWith('-')) return parseAmount(text);
@@ -197,7 +207,9 @@ class LoadLedger extends StatelessWidget {
           body: Center(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Text('账本读取失败，请保留应用数据并重试。\n${s.error}'),
+              child: Text(
+                '账本读取失败，请保留应用数据并重试。\n${s.error}\n如果设备密钥已经丢失，需要重新安装应用并从之前导出的备份恢复；重新安装会清除当前应用数据。',
+              ),
             ),
           ),
         );
@@ -559,6 +571,18 @@ class _HomeState extends State<Home> {
                 exportBackup();
               } else if (value == 'encrypted') {
                 exportEncryptedBackup();
+              } else if (value == 'rates') {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => RatesPage(ledger: ledger),
+                  ),
+                );
+              } else if (value == 'storage-security') {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => StorageSecurityPage(ledger: ledger),
+                  ),
+                );
               } else if (value == 'lock') {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
@@ -600,6 +624,8 @@ class _HomeState extends State<Home> {
               PopupMenuItem(value: 'categories', child: Text('分类管理')),
               PopupMenuItem(value: 'reminders', child: Text('记账提醒')),
               PopupMenuItem(value: 'lock', child: Text('应用锁')),
+              PopupMenuItem(value: 'storage-security', child: Text('本地账本加密')),
+              PopupMenuItem(value: 'rates', child: Text('手动汇率')),
             ],
           ),
           IconButton(
@@ -673,6 +699,18 @@ class _HomeState extends State<Home> {
                           letterSpacing: -1,
                         ),
                       ),
+                      if (ledger.accounts.any((a) => a.currency != 'CNY')) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          ledger.estimatedCnyCents() == null
+                              ? '未设置全部汇率，无法折合人民币'
+                              : '参考折合 ¥ ${money(ledger.estimatedCnyCents()!)} · 手动汇率，非实时',
+                          style: const TextStyle(
+                            color: Color(0xffb8c9d3),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 24),
                       Row(
                         children: [
@@ -2524,6 +2562,171 @@ class LockSettingsPage extends StatelessWidget {
           const Padding(
             padding: EdgeInsets.all(16),
             child: Text('应用锁用于限制打开应用，不会加密手机中的账本文件。导出时可选择加密备份。切换到后台会重新锁定。'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class StorageSecurityPage extends StatefulWidget {
+  final Ledger ledger;
+  const StorageSecurityPage({super.key, required this.ledger});
+  @override
+  State<StorageSecurityPage> createState() => _StorageSecurityPageState();
+}
+
+class _StorageSecurityPageState extends State<StorageSecurityPage> {
+  bool busy = false;
+  Future<void> enable() async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('启用本地加密？'),
+        content: const Text(
+          '请先导出并妥善保存备份。加密密钥由设备保管；卸载应用、清除数据或设备密钥丢失后，可能只能从备份恢复。此功能尚需安卓真机验证。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('已备份，启用加密'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true || !mounted) return;
+    setState(() => busy = true);
+    try {
+      await widget.ledger.enableLocalEncryption();
+      if (mounted) {
+        setState(() => busy = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('本地账本加密已启用')));
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => busy = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('加密未完成，请保留应用数据并检查备份')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('本地账本加密')),
+    body: ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        ListTile(
+          leading: const Icon(Icons.enhanced_encryption_outlined),
+          title: Text(
+            widget.ledger.localEncryptionEnabled ? '本地账本已加密' : '本地账本未加密',
+          ),
+          subtitle: const Text('账本数据使用设备保管的密钥加密；导出文件的保护方式由导出选项决定。'),
+        ),
+        const SizedBox(height: 16),
+        if (!widget.ledger.localEncryptionEnabled)
+          FilledButton(
+            onPressed: busy ? null : enable,
+            child: const Text('启用本地加密'),
+          ),
+        const SizedBox(height: 16),
+        const Text(
+          '请定期导出加密备份并保管密码。卸载应用或清除应用数据可能同时删除账本和设备密钥。当前版本不支持在应用内关闭本地加密。',
+        ),
+      ],
+    ),
+  );
+}
+
+class RatesPage extends StatefulWidget {
+  final Ledger ledger;
+  const RatesPage({super.key, required this.ledger});
+  @override
+  State<RatesPage> createState() => _RatesPageState();
+}
+
+class _RatesPageState extends State<RatesPage> {
+  final form = GlobalKey<FormState>();
+  late Map<String, TextEditingController> fields;
+  bool busy = false;
+  @override
+  void initState() {
+    super.initState();
+    fields = {
+      for (final code in Account.supportedCurrencies.where((c) => c != 'CNY'))
+        code: TextEditingController(
+          text: widget.ledger.manualRates.containsKey(code)
+              ? (widget.ledger.manualRates[code]! / 1000000).toStringAsFixed(6)
+              : '',
+        ),
+    };
+  }
+
+  @override
+  void dispose() {
+    for (final c in fields.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> save() async {
+    if (!form.currentState!.validate()) return;
+    setState(() => busy = true);
+    try {
+      await widget.ledger.setManualRates({
+        for (final e in fields.entries)
+          if (e.value.text.trim().isNotEmpty) e.key: parseRate(e.value.text)!,
+      });
+      if (mounted) Navigator.pop(context);
+    } catch (_) {
+      if (mounted) {
+        setState(() => busy = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('保存汇率失败')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('手动汇率')),
+    body: Form(
+      key: form,
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const Text('输入 1 单位外币折合多少人民币。汇率仅供参考，不会自动更新；留空表示未设置。'),
+          if (widget.ledger.ratesUpdatedAt != null)
+            Text(
+              '上次手动更新：${widget.ledger.ratesUpdatedAt!.year}-${widget.ledger.ratesUpdatedAt!.month.toString().padLeft(2, '0')}-${widget.ledger.ratesUpdatedAt!.day.toString().padLeft(2, '0')}',
+            ),
+          const SizedBox(height: 16),
+          ...fields.entries.map(
+            (e) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: TextFormField(
+                controller: e.value,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(labelText: '1 ${e.key} = 人民币'),
+                validator: (v) =>
+                    (v ?? '').trim().isEmpty || parseRate(v!) != null
+                    ? null
+                    : '请输入大于零且不超过 1000 的汇率，最多六位小数',
+              ),
+            ),
+          ),
+          FilledButton(
+            onPressed: busy ? null : save,
+            child: const Text('保存汇率'),
           ),
         ],
       ),

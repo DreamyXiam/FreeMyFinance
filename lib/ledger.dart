@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'ledger_store.dart';
+
 class Account {
   static const supportedCurrencies = ['CNY', 'HKD', 'USD', 'EUR', 'GBP'];
   final String id, name, imageUrl, currency;
@@ -120,32 +122,40 @@ class Recurring {
 }
 
 class Ledger extends ChangeNotifier {
-  final SharedPreferences _prefs;
+  final LedgerStore _store;
   final List<Account> accounts;
   final List<Entry> entries;
   int monthlyBudgetCents;
   final List<Recurring> recurring;
+  final Map<String, int> manualRates;
+  DateTime? ratesUpdatedAt;
   bool _saving = false;
   Ledger._(
-    this._prefs,
+    this._store,
     this.accounts,
     this.entries, [
     this.monthlyBudgetCents = 0,
     List<Recurring>? rules,
-  ]) : recurring = rules ?? [];
-  static Future<Ledger> load() async {
+    Map<String, int>? rates,
+    this.ratesUpdatedAt,
+  ]) : recurring = rules ?? [],
+       manualRates = rates ?? {};
+  static Future<Ledger> load({KeyVault? vault}) async {
     final p = await SharedPreferences.getInstance();
-    final raw = p.getString('ledger_v1');
-    if (raw == null) return Ledger._(p, [], []);
+    final store = LedgerStore(p, vault ?? DeviceKeyVault());
+    final raw = await store.read();
+    if (raw == null) return Ledger._(store, [], []);
     final j = jsonDecode(raw) as Map<String, dynamic>;
     return Ledger._(
-      p,
+      store,
       (j['accounts'] as List).map((e) => Account.fromJson(e)).toList(),
       (j['entries'] as List).map((e) => Entry.fromJson(e)).toList(),
       j['monthlyBudgetCents'] ?? 0,
       (j['recurring'] as List? ?? [])
           .map((e) => Recurring.fromJson(e))
           .toList(),
+      Map<String, int>.from(j['manualRates'] ?? {}),
+      j['ratesUpdatedAt'] == null ? null : DateTime.parse(j['ratesUpdatedAt']),
     );
   }
 
@@ -154,21 +164,30 @@ class Ledger extends ChangeNotifier {
     List<Entry> nextEntries, {
     int? budget,
     List<Recurring>? rules,
+    Map<String, int>? rates,
+    DateTime? ratesDate,
   }) async {
     if (_saving) throw StateError('已有操作正在保存，请重试');
     _saving = true;
     try {
-      final ok = await _prefs.setString(
-        'ledger_v1',
+      await _store.write(
         jsonEncode({
           'accounts': nextAccounts.map((a) => a.toJson()).toList(),
           'entries': nextEntries.map((e) => e.toJson()).toList(),
           'monthlyBudgetCents': budget ?? monthlyBudgetCents,
           'recurring': (rules ?? recurring).map((r) => r.toJson()).toList(),
+          'manualRates': rates ?? manualRates,
+          'ratesUpdatedAt': (rates == null ? ratesUpdatedAt : ratesDate)
+              ?.toIso8601String(),
         }),
       );
-      if (!ok) throw StateError('保存失败');
       monthlyBudgetCents = budget ?? monthlyBudgetCents;
+      if (rates != null) {
+        manualRates
+          ..clear()
+          ..addAll(rates);
+        ratesUpdatedAt = ratesDate;
+      }
       if (rules != null) {
         recurring
           ..clear()
@@ -186,9 +205,31 @@ class Ledger extends ChangeNotifier {
     }
   }
 
+  bool get localEncryptionEnabled => _store.encryptionVerified;
+  Future<void> enableLocalEncryption() async {
+    if (_saving) throw StateError('已有操作正在保存，请重试');
+    _saving = true;
+    try {
+      final raw = jsonEncode({
+        'accounts': accounts.map((a) => a.toJson()).toList(),
+        'entries': entries.map((e) => e.toJson()).toList(),
+        'monthlyBudgetCents': monthlyBudgetCents,
+        'recurring': recurring.map((r) => r.toJson()).toList(),
+        'manualRates': manualRates,
+        'ratesUpdatedAt': ratesUpdatedAt?.toIso8601String(),
+      });
+      await _store.enable(raw);
+      notifyListeners();
+    } finally {
+      _saving = false;
+    }
+  }
+
   String exportBackup() => jsonEncode({
     'format': 'FreeMyFinance',
-    'version': 5,
+    'version': 6,
+    'manualRates': manualRates,
+    'ratesUpdatedAt': ratesUpdatedAt?.toIso8601String(),
     'monthlyBudgetCents': monthlyBudgetCents,
     'recurring': recurring.map((r) => r.toJson()).toList(),
     'accounts': accounts.map((a) => a.toJson()).toList(),
@@ -204,11 +245,33 @@ class Ledger extends ChangeNotifier {
               data['version'] != 2 &&
               data['version'] != 3 &&
               data['version'] != 4 &&
-              data['version'] != 5) ||
+              data['version'] != 5 &&
+              data['version'] != 6) ||
           data['accounts'] is! List ||
           data['entries'] is! List) {
         throw const FormatException('无效的备份格式');
       }
+      final rawRates = data['manualRates'] ?? {};
+      if (rawRates is! Map) throw const FormatException('汇率数据无效');
+      final rates = <String, int>{};
+      for (final e in rawRates.entries) {
+        if (e.key is! String ||
+            e.key == 'CNY' ||
+            !Account.supportedCurrencies.contains(e.key) ||
+            e.value is! int ||
+            (e.value as int) <= 0 ||
+            (e.value as int) > 1000000000) {
+          throw const FormatException('汇率数据无效');
+        }
+        rates[e.key] = e.value;
+      }
+      final rawDate = data['ratesUpdatedAt'];
+      if (rawDate != null && rawDate is! String) {
+        throw const FormatException('汇率日期无效');
+      }
+      final ratesDate = rawDate == null
+          ? null
+          : DateTime.parse(rawDate as String);
       final budget = data['monthlyBudgetCents'] ?? 0;
       if (budget is! int || budget < 0) throw const FormatException('预算数据无效');
       final newAccounts = <Account>[];
@@ -304,12 +367,49 @@ class Ledger extends ChangeNotifier {
           throw const FormatException('转账数据无效');
         }
       }
-      await _commit(newAccounts, newEntries, budget: budget, rules: newRules);
+      await _commit(
+        newAccounts,
+        newEntries,
+        budget: budget,
+        rules: newRules,
+        rates: rates,
+        ratesDate: ratesDate,
+      );
     } on FormatException {
       rethrow;
     } on TypeError {
       throw const FormatException('备份内容无效');
     }
+  }
+
+  Future<void> setManualRates(Map<String, int> rates) async {
+    for (final e in rates.entries) {
+      if (e.key == 'CNY' ||
+          !Account.supportedCurrencies.contains(e.key) ||
+          e.value <= 0 ||
+          e.value > 1000000000) {
+        throw StateError('汇率无效');
+      }
+    }
+    await _commit(
+      [...accounts],
+      [...entries],
+      rates: Map.of(rates),
+      ratesDate: DateTime.now(),
+    );
+  }
+
+  int? estimatedCnyCents() {
+    var total = BigInt.zero;
+    for (final a in accounts) {
+      final rate = a.currency == 'CNY' ? 1000000 : manualRates[a.currency];
+      if (rate == null) return null;
+      final n = BigInt.from(balance(a.id)) * BigInt.from(rate);
+      final abs = (n.abs() + BigInt.from(500000)) ~/ BigInt.from(1000000);
+      total += n.isNegative ? -abs : abs;
+    }
+    if (!total.isValidInt) throw StateError('金额超出范围');
+    return total.toInt();
   }
 
   Future<void> setMonthlyBudget(int cents) async {
