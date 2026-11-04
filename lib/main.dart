@@ -5,6 +5,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:flutter/material.dart';
 
 import 'ledger.dart';
+import 'reports.dart';
 
 const navy = Color(0xff142946),
     teal = Color(0xff007f83),
@@ -86,6 +87,8 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   int tab = 0;
+  String search = '', accountFilter = '';
+  DateTime? monthFilter;
   Ledger get ledger => widget.ledger;
   @override
   void initState() {
@@ -189,16 +192,21 @@ class _HomeState extends State<Home> {
     }
   }
 
-  Future<void> addAccount() async {
+  Future<void> addAccount([Account? account]) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (_) => AccountForm(ledger: ledger),
+      builder: (_) => AccountForm(ledger: ledger, account: account),
     );
   }
 
-  Future<void> addEntry() async {
+  Future<void> addEntry([Entry? entry]) async {
+    if (entry != null && entry.transferId.isNotEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('转账请删除后重新记录')));
+      return;
+    }
     if (ledger.accounts.isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('请先添加一个账户')));
@@ -210,7 +218,7 @@ class _HomeState extends State<Home> {
         context: context,
         isScrollControlled: true,
         showDragHandle: true,
-        builder: (_) => EntryForm(ledger: ledger),
+        builder: (_) => EntryForm(ledger: ledger, entry: entry),
       );
     }
   }
@@ -219,6 +227,21 @@ class _HomeState extends State<Home> {
   Widget build(BuildContext context) {
     final entries = [...ledger.entries]
       ..sort((a, b) => b.date.compareTo(a.date));
+    final filteredEntries = entries.where((e) {
+      final accountName = ledger.accounts
+          .where((a) => a.id == e.accountId)
+          .map((a) => a.name)
+          .join();
+      final term = search.trim().toLowerCase();
+      return (accountFilter.isEmpty || e.accountId == accountFilter) &&
+          (monthFilter == null ||
+              (e.date.year == monthFilter!.year &&
+                  e.date.month == monthFilter!.month)) &&
+          (term.isEmpty ||
+              '${e.category} ${e.note} $accountName'.toLowerCase().contains(
+                term,
+              ));
+    }).toList();
     final now = DateTime.now();
     final total = ledger.accounts.fold<int>(
       0,
@@ -259,6 +282,11 @@ class _HomeState extends State<Home> {
               PopupMenuItem(value: 'export', child: Text('导出备份')),
               PopupMenuItem(value: 'import', child: Text('恢复备份')),
             ],
+          ),
+          IconButton(
+            onPressed: addTransfer,
+            tooltip: '账户转账',
+            icon: const Icon(Icons.swap_horiz),
           ),
           IconButton(
             onPressed: addAccount,
@@ -368,6 +396,7 @@ class _HomeState extends State<Home> {
                           entry: e,
                           ledger: ledger,
                           onDelete: () => _delete(e),
+                          onEdit: () => addEntry(e),
                         ),
                       ),
               ],
@@ -377,18 +406,69 @@ class _HomeState extends State<Home> {
               children: [
                 const PageTitle('账单', '每一笔收支，都在这里'),
                 const SizedBox(height: 18),
-                if (entries.isEmpty)
+                TextField(
+                  decoration: const InputDecoration(
+                    labelText: '搜索分类、备注或账户',
+                    prefixIcon: Icon(Icons.search),
+                  ),
+                  onChanged: (v) => setState(() => search = v),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  initialValue:
+                      ledger.accounts.any((a) => a.id == accountFilter)
+                      ? accountFilter
+                      : '',
+                  decoration: const InputDecoration(labelText: '账户筛选'),
+                  items: [
+                    const DropdownMenuItem(value: '', child: Text('全部账户')),
+                    ...ledger.accounts.map(
+                      (a) => DropdownMenuItem(value: a.id, child: Text(a.name)),
+                    ),
+                  ],
+                  onChanged: (v) => setState(() => accountFilter = v ?? ''),
+                ),
+                Row(
+                  children: [
+                    TextButton.icon(
+                      onPressed: () async {
+                        final d = await showDatePicker(
+                          context: context,
+                          initialDate: monthFilter ?? DateTime.now(),
+                          firstDate: DateTime(2000),
+                          lastDate: DateTime(2100),
+                        );
+                        if (d != null && mounted) {
+                          setState(() => monthFilter = d);
+                        }
+                      },
+                      icon: const Icon(Icons.calendar_month),
+                      label: Text(
+                        monthFilter == null
+                            ? '选择月份'
+                            : '${monthFilter!.year} 年 ${monthFilter!.month} 月',
+                      ),
+                    ),
+                    if (monthFilter != null)
+                      TextButton(
+                        onPressed: () => setState(() => monthFilter = null),
+                        child: const Text('全部日期'),
+                      ),
+                  ],
+                ),
+                if (filteredEntries.isEmpty)
                   const EmptyState(
                     icon: Icons.receipt_long_outlined,
-                    title: '还没有账单',
-                    subtitle: '点击下方按钮添加第一笔。',
+                    title: '没有匹配的账单',
+                    subtitle: '试试调整筛选条件，或添加新账单。',
                   )
                 else
-                  ...entries.map(
+                  ...filteredEntries.map(
                     (e) => EntryTile(
                       entry: e,
                       ledger: ledger,
                       onDelete: () => _delete(e),
+                      onEdit: () => addEntry(e),
                     ),
                   ),
               ],
@@ -477,12 +557,30 @@ class _HomeState extends State<Home> {
                               color: navy,
                             ),
                           ),
+                          PopupMenuButton<String>(
+                            tooltip: '账户操作',
+                            onSelected: (value) {
+                              if (value == 'edit') {
+                                addAccount(a);
+                              } else {
+                                deleteAccount(a);
+                              }
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(value: 'edit', child: Text('编辑账户')),
+                              PopupMenuItem(
+                                value: 'delete',
+                                child: Text('删除账户'),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
                   ),
               ],
             ),
+            ReportView(ledger: ledger),
           ],
         ),
       ),
@@ -514,9 +612,63 @@ class _HomeState extends State<Home> {
             selectedIcon: Icon(Icons.account_balance_wallet),
             label: '账户',
           ),
+          NavigationDestination(
+            icon: Icon(Icons.bar_chart_outlined),
+            selectedIcon: Icon(Icons.bar_chart),
+            label: '统计',
+          ),
         ],
       ),
     );
+  }
+
+  Future<void> addTransfer() async {
+    if (ledger.accounts.length < 2) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('转账需要至少两个账户')));
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => TransferForm(ledger: ledger),
+    );
+  }
+
+  Future<void> deleteAccount(Account account) async {
+    if (ledger.entries.any((e) => e.accountId == account.id)) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('账户仍有关联账单，请先处理账单')));
+      return;
+    }
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('删除账户？'),
+        content: Text('将删除“${account.name}”。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (yes == true) {
+      try {
+        await ledger.deleteAccount(account.id);
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('删除失败，请重试')));
+        }
+      }
+    }
   }
 
   Future<void> _delete(Entry e) async {
@@ -524,7 +676,9 @@ class _HomeState extends State<Home> {
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('删除这笔账单？'),
-        content: const Text('删除后账户余额会重新计算。'),
+        content: Text(
+          e.transferId.isEmpty ? '删除后账户余额会重新计算。' : '将同时删除转出和转入记录，并重新计算余额。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(c, false),
@@ -626,12 +780,13 @@ class EmptyState extends StatelessWidget {
 class EntryTile extends StatelessWidget {
   final Entry entry;
   final Ledger ledger;
-  final VoidCallback onDelete;
+  final VoidCallback onDelete, onEdit;
   const EntryTile({
     super.key,
     required this.entry,
     required this.ledger,
     required this.onDelete,
+    required this.onEdit,
   });
   @override
   Widget build(BuildContext c) {
@@ -643,44 +798,51 @@ class EntryTile extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
       ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
-        leading: CircleAvatar(
-          backgroundColor: entry.income
-              ? const Color(0xffddf3ea)
-              : const Color(0xffe7eef8),
-          child: Icon(
-            entry.income ? Icons.south_west : Icons.north_east,
-            color: entry.income ? teal : navy,
-            size: 19,
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 5,
           ),
-        ),
-        title: Text(
-          entry.category,
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-        subtitle: Text(
-          '$name · ${entry.date.year}/${entry.date.month.toString().padLeft(2, '0')}/${entry.date.day.toString().padLeft(2, '0')}${entry.note.isEmpty ? '' : ' · ${entry.note}'}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '${entry.income ? '+' : '−'}¥${money(entry.cents)}',
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                color: entry.income ? teal : ink,
-                fontSize: 15,
+          leading: CircleAvatar(
+            backgroundColor: entry.income
+                ? const Color(0xffddf3ea)
+                : const Color(0xffe7eef8),
+            child: Icon(
+              entry.income ? Icons.south_west : Icons.north_east,
+              color: entry.income ? teal : navy,
+              size: 19,
+            ),
+          ),
+          onTap: onEdit,
+          title: Text(
+            entry.category,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          subtitle: Text(
+            '$name · ${entry.date.year}/${entry.date.month.toString().padLeft(2, '0')}/${entry.date.day.toString().padLeft(2, '0')}${entry.note.isEmpty ? '' : ' · ${entry.note}'}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '${entry.income ? '+' : '−'}¥${money(entry.cents)}',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: entry.income ? teal : ink,
+                  fontSize: 15,
+                ),
               ),
-            ),
-            IconButton(
-              onPressed: onDelete,
-              tooltip: '删除账单',
-              icon: const Icon(Icons.more_horiz),
-            ),
-          ],
+              IconButton(
+                onPressed: onDelete,
+                tooltip: '删除账单',
+                icon: const Icon(Icons.more_horiz),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -689,7 +851,8 @@ class EntryTile extends StatelessWidget {
 
 class AccountForm extends StatefulWidget {
   final Ledger ledger;
-  const AccountForm({super.key, required this.ledger});
+  final Account? account;
+  const AccountForm({super.key, required this.ledger, this.account});
   @override
   State<AccountForm> createState() => _AccountFormState();
 }
@@ -700,6 +863,17 @@ class _AccountFormState extends State<AccountForm> {
       opening = TextEditingController(text: '0'),
       imageUrl = TextEditingController();
   bool saving = false;
+  @override
+  void initState() {
+    super.initState();
+    final a = widget.account;
+    if (a != null) {
+      name.text = a.name;
+      opening.text = money(a.openingCents);
+      imageUrl.text = a.imageUrl;
+    }
+  }
+
   @override
   void dispose() {
     name.dispose();
@@ -723,8 +897,8 @@ class _AccountFormState extends State<AccountForm> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              '添加账户',
+            Text(
+              widget.account == null ? '添加账户' : '编辑账户',
               style: TextStyle(
                 fontSize: 23,
                 fontWeight: FontWeight.w800,
@@ -774,14 +948,17 @@ class _AccountFormState extends State<AccountForm> {
                       if (!form.currentState!.validate()) return;
                       setState(() => saving = true);
                       try {
-                        await widget.ledger.addAccount(
-                          Account(
-                            id: uid(),
-                            name: name.text.trim(),
-                            openingCents: parseAmount(opening.text)!,
-                            imageUrl: imageUrl.text.trim(),
-                          ),
+                        final account = Account(
+                          id: widget.account?.id ?? uid(),
+                          name: name.text.trim(),
+                          openingCents: parseAmount(opening.text)!,
+                          imageUrl: imageUrl.text.trim(),
                         );
+                        if (widget.account == null) {
+                          await widget.ledger.addAccount(account);
+                        } else {
+                          await widget.ledger.updateAccount(account);
+                        }
                         if (context.mounted) Navigator.pop(context);
                       } catch (e) {
                         if (context.mounted) {
@@ -806,7 +983,8 @@ class _AccountFormState extends State<AccountForm> {
 
 class EntryForm extends StatefulWidget {
   final Ledger ledger;
-  const EntryForm({super.key, required this.ledger});
+  final Entry? entry;
+  const EntryForm({super.key, required this.ledger, this.entry});
   @override
   State<EntryForm> createState() => _EntryFormState();
 }
@@ -821,7 +999,15 @@ class _EntryFormState extends State<EntryForm> {
   @override
   void initState() {
     super.initState();
-    account = widget.ledger.accounts.first.id;
+    final e = widget.entry;
+    account = e?.accountId ?? widget.ledger.accounts.first.id;
+    if (e != null) {
+      amount.text = money(e.cents);
+      note.text = e.note;
+      income = e.income;
+      category = e.category;
+      date = e.date;
+    }
   }
 
   @override
@@ -850,8 +1036,8 @@ class _EntryFormState extends State<EntryForm> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
-                '记一笔',
+              Text(
+                widget.entry == null ? '记一笔' : '编辑账单',
                 style: TextStyle(
                   fontSize: 23,
                   fontWeight: FontWeight.w800,
@@ -940,17 +1126,20 @@ class _EntryFormState extends State<EntryForm> {
                         if (!form.currentState!.validate()) return;
                         setState(() => saving = true);
                         try {
-                          await widget.ledger.addEntry(
-                            Entry(
-                              id: uid(),
-                              accountId: account,
-                              cents: parseAmount(amount.text)!,
-                              income: income,
-                              category: category,
-                              note: note.text.trim(),
-                              date: date,
-                            ),
+                          final entry = Entry(
+                            id: widget.entry?.id ?? uid(),
+                            accountId: account,
+                            cents: parseAmount(amount.text)!,
+                            income: income,
+                            category: category,
+                            note: note.text.trim(),
+                            date: date,
                           );
+                          if (widget.entry == null) {
+                            await widget.ledger.addEntry(entry);
+                          } else {
+                            await widget.ledger.updateEntry(entry);
+                          }
                           if (context.mounted) Navigator.pop(context);
                         } catch (e) {
                           if (context.mounted) {
@@ -972,4 +1161,282 @@ class _EntryFormState extends State<EntryForm> {
       ),
     );
   }
+}
+
+class ReportView extends StatefulWidget {
+  final Ledger ledger;
+  const ReportView({super.key, required this.ledger});
+  @override
+  State<ReportView> createState() => _ReportViewState();
+}
+
+class _ReportViewState extends State<ReportView> {
+  int year = DateTime.now().year, month = DateTime.now().month;
+  String account = '';
+  @override
+  Widget build(BuildContext context) {
+    final years = {
+      DateTime.now().year,
+      year,
+      ...widget.ledger.entries.map((e) => e.date.year),
+    }.toList()..sort((a, b) => b.compareTo(a));
+    final selectedAccount = widget.ledger.accounts.any((a) => a.id == account)
+        ? account
+        : '';
+    final r = Report.calculate(
+      widget.ledger.entries,
+      year: year,
+      month: month == 0 ? null : month,
+      accountId: selectedAccount.isEmpty ? null : selectedAccount,
+    );
+    final rows = r.categories.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
+      children: [
+        const PageTitle('统计', '按时间和账户查看收支'),
+        const SizedBox(height: 18),
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                initialValue: year,
+                decoration: const InputDecoration(labelText: '年份'),
+                items: years
+                    .map((y) => DropdownMenuItem(value: y, child: Text('$y 年')))
+                    .toList(),
+                onChanged: (v) => setState(() => year = v!),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                initialValue: month,
+                decoration: const InputDecoration(labelText: '月份'),
+                items: [
+                  const DropdownMenuItem(value: 0, child: Text('全年')),
+                  ...List.generate(
+                    12,
+                    (i) => DropdownMenuItem(
+                      value: i + 1,
+                      child: Text('${i + 1} 月'),
+                    ),
+                  ),
+                ],
+                onChanged: (v) => setState(() => month = v!),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          initialValue: selectedAccount,
+          decoration: const InputDecoration(labelText: '账户'),
+          items: [
+            const DropdownMenuItem(value: '', child: Text('全部账户')),
+            ...widget.ledger.accounts.map(
+              (a) => DropdownMenuItem(value: a.id, child: Text(a.name)),
+            ),
+          ],
+          onChanged: (v) => setState(() => account = v ?? ''),
+        ),
+        const SizedBox(height: 18),
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: navy,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Summary(label: '收入', amount: r.income),
+              ),
+              Expanded(
+                child: Summary(label: '支出', amount: r.expenses),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        const Text(
+          '支出分类',
+          style: TextStyle(
+            color: ink,
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (rows.isEmpty)
+          const EmptyState(
+            icon: Icons.bar_chart,
+            title: '暂无支出',
+            subtitle: '选择其他时间或账户查看。',
+          )
+        else
+          ...rows.map(
+            (e) => Card(
+              child: ListTile(
+                title: Text(e.key),
+                subtitle: LinearProgressIndicator(
+                  value: r.expenses == 0 ? 0 : e.value / r.expenses,
+                ),
+                trailing: Text('¥ ${money(e.value)}'),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class TransferForm extends StatefulWidget {
+  final Ledger ledger;
+  const TransferForm({super.key, required this.ledger});
+  @override
+  State<TransferForm> createState() => _TransferFormState();
+}
+
+class _TransferFormState extends State<TransferForm> {
+  final form = GlobalKey<FormState>();
+  final amount = TextEditingController(), note = TextEditingController();
+  late String from, to;
+  DateTime date = DateTime.now();
+  bool saving = false;
+  @override
+  void initState() {
+    super.initState();
+    from = widget.ledger.accounts[0].id;
+    to = widget.ledger.accounts[1].id;
+  }
+
+  @override
+  void dispose() {
+    amount.dispose();
+    note.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: EdgeInsets.fromLTRB(
+      22,
+      4,
+      22,
+      MediaQuery.viewInsetsOf(context).bottom + 24,
+    ),
+    child: Form(
+      key: form,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '账户转账',
+              style: TextStyle(
+                fontSize: 23,
+                fontWeight: FontWeight.w800,
+                color: ink,
+              ),
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              initialValue: from,
+              decoration: const InputDecoration(labelText: '转出账户'),
+              items: widget.ledger.accounts
+                  .map(
+                    (a) => DropdownMenuItem(value: a.id, child: Text(a.name)),
+                  )
+                  .toList(),
+              onChanged: (v) => setState(() => from = v!),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: to,
+              decoration: const InputDecoration(labelText: '转入账户'),
+              items: widget.ledger.accounts
+                  .map(
+                    (a) => DropdownMenuItem(value: a.id, child: Text(a.name)),
+                  )
+                  .toList(),
+              onChanged: (v) => setState(() => to = v!),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: amount,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(labelText: '转账金额（元）'),
+              validator: (v) {
+                final n = parseAmount(v ?? '');
+                return n == null || n <= 0 ? '请输入大于零的金额' : null;
+              },
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: note,
+              maxLength: 80,
+              decoration: const InputDecoration(labelText: '备注（选填）'),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('日期'),
+              subtitle: Text(
+                '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}',
+              ),
+              trailing: const Icon(Icons.calendar_today_outlined),
+              onTap: () async {
+                final d = await showDatePicker(
+                  context: context,
+                  initialDate: date,
+                  firstDate: DateTime(2000),
+                  lastDate: DateTime(2100),
+                );
+                if (d != null && mounted) setState(() => date = d);
+              },
+            ),
+            FilledButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      if (!form.currentState!.validate()) return;
+                      if (from == to) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('请选择不同账户')),
+                        );
+                        return;
+                      }
+                      setState(() => saving = true);
+                      try {
+                        await widget.ledger.addTransfer(
+                          id: uid(),
+                          from: from,
+                          to: to,
+                          cents: parseAmount(amount.text)!,
+                          date: date,
+                          note: note.text.trim(),
+                        );
+                        if (context.mounted) Navigator.pop(context);
+                      } catch (_) {
+                        if (context.mounted) {
+                          setState(() => saving = false);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('保存失败，请重试')),
+                          );
+                        }
+                      }
+                    },
+              child: const Padding(
+                padding: EdgeInsets.all(14),
+                child: Text('保存转账'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }

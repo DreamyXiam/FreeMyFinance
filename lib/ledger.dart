@@ -27,7 +27,7 @@ class Account {
 }
 
 class Entry {
-  final String id, accountId, category, note;
+  final String id, accountId, category, note, transferId;
   final int cents;
   final bool income;
   final DateTime date;
@@ -39,6 +39,7 @@ class Entry {
     required this.category,
     required this.note,
     required this.date,
+    this.transferId = '',
   });
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -47,6 +48,7 @@ class Entry {
     'income': income,
     'category': category,
     'note': note,
+    'transferId': transferId,
     'date': date.toIso8601String(),
   };
   factory Entry.fromJson(Map<String, dynamic> j) => Entry(
@@ -56,6 +58,7 @@ class Entry {
     income: j['income'],
     category: j['category'],
     note: j['note'],
+    transferId: j['transferId'] ?? '',
     date: DateTime.parse(j['date']),
   );
 }
@@ -77,21 +80,30 @@ class Ledger extends ChangeNotifier {
     );
   }
 
-  Future<void> _save() async {
+  Future<void> _commit(
+    List<Account> nextAccounts,
+    List<Entry> nextEntries,
+  ) async {
     final ok = await _prefs.setString(
       'ledger_v1',
       jsonEncode({
-        'accounts': accounts.map((e) => e.toJson()).toList(),
-        'entries': entries.map((e) => e.toJson()).toList(),
+        'accounts': nextAccounts.map((a) => a.toJson()).toList(),
+        'entries': nextEntries.map((e) => e.toJson()).toList(),
       }),
     );
     if (!ok) throw StateError('保存失败');
+    accounts
+      ..clear()
+      ..addAll(nextAccounts);
+    entries
+      ..clear()
+      ..addAll(nextEntries);
     notifyListeners();
   }
 
   String exportBackup() => jsonEncode({
     'format': 'FreeMyFinance',
-    'version': 1,
+    'version': 2,
     'accounts': accounts.map((a) => a.toJson()).toList(),
     'entries': entries.map((e) => e.toJson()).toList(),
   });
@@ -101,7 +113,7 @@ class Ledger extends ChangeNotifier {
       final data = jsonDecode(text);
       if (data is! Map<String, dynamic> ||
           data['format'] != 'FreeMyFinance' ||
-          data['version'] != 1 ||
+          (data['version'] != 1 && data['version'] != 2) ||
           data['accounts'] is! List ||
           data['entries'] is! List) {
         throw const FormatException('无效的备份格式');
@@ -137,12 +149,26 @@ class Ledger extends ChangeNotifier {
             item['category'] is! String ||
             (item['category'] as String).trim().isEmpty ||
             item['note'] is! String ||
+            (item['transferId'] != null && item['transferId'] is! String) ||
             item['date'] is! String) {
           throw const FormatException('账单数据无效');
         }
         final entry = Entry.fromJson(item);
         if (!entryIds.add(entry.id)) throw const FormatException('账单编号重复');
         newEntries.add(entry);
+      }
+      final transferIds = newEntries
+          .where((e) => e.transferId.isNotEmpty)
+          .map((e) => e.transferId)
+          .toSet();
+      for (final id in transferIds) {
+        final pair = newEntries.where((e) => e.transferId == id).toList();
+        if (pair.length != 2 ||
+            pair[0].income == pair[1].income ||
+            pair[0].cents != pair[1].cents ||
+            pair[0].accountId == pair[1].accountId) {
+          throw const FormatException('转账数据无效');
+        }
       }
       final raw = jsonEncode({
         'accounts': newAccounts.map((a) => a.toJson()).toList(),
@@ -164,18 +190,107 @@ class Ledger extends ChangeNotifier {
   }
 
   Future<void> addAccount(Account a) async {
-    accounts.add(a);
-    await _save();
+    if (accounts.any((x) => x.id == a.id)) throw StateError('账户编号重复');
+    await _commit([...accounts, a], [...entries]);
+  }
+
+  Future<void> updateAccount(Account a) async {
+    if (!accounts.any((x) => x.id == a.id)) throw StateError('账户不存在');
+    await _commit(
+      [
+        for (final x in accounts)
+          if (x.id == a.id) a else x,
+      ],
+      [...entries],
+    );
+  }
+
+  Future<void> deleteAccount(String id) async {
+    if (entries.any((e) => e.accountId == id)) throw StateError('账户仍有关联账单');
+    await _commit(accounts.where((a) => a.id != id).toList(), [...entries]);
   }
 
   Future<void> addEntry(Entry e) async {
-    entries.add(e);
-    await _save();
+    if (!accounts.any((a) => a.id == e.accountId) ||
+        e.cents <= 0 ||
+        entries.any((x) => x.id == e.id)) {
+      throw StateError('账单无效');
+    }
+    await _commit([...accounts], [...entries, e]);
+  }
+
+  Future<void> updateEntry(Entry e) async {
+    if (e.transferId.isNotEmpty ||
+        entries.any((x) => x.id == e.id && x.transferId.isNotEmpty) ||
+        !entries.any((x) => x.id == e.id) ||
+        !accounts.any((a) => a.id == e.accountId) ||
+        e.cents <= 0) {
+      throw StateError('账单无效');
+    }
+    await _commit(
+      [...accounts],
+      [
+        for (final x in entries)
+          if (x.id == e.id) e else x,
+      ],
+    );
+  }
+
+  Future<void> addTransfer({
+    required String id,
+    required String from,
+    required String to,
+    required int cents,
+    required DateTime date,
+    required String note,
+  }) async {
+    if (id.isEmpty ||
+        from == to ||
+        cents <= 0 ||
+        !accounts.any((a) => a.id == from) ||
+        !accounts.any((a) => a.id == to) ||
+        entries.any(
+          (e) => e.transferId == id || e.id == '$id-out' || e.id == '$id-in',
+        )) {
+      throw StateError('转账信息无效');
+    }
+    final out = Entry(
+      id: '$id-out',
+      accountId: from,
+      cents: cents,
+      income: false,
+      category: '账户转账',
+      note: note,
+      date: date,
+      transferId: id,
+    );
+    final incoming = Entry(
+      id: '$id-in',
+      accountId: to,
+      cents: cents,
+      income: true,
+      category: '账户转账',
+      note: note,
+      date: date,
+      transferId: id,
+    );
+    await _commit([...accounts], [...entries, out, incoming]);
   }
 
   Future<void> deleteEntry(String id) async {
-    entries.removeWhere((e) => e.id == id);
-    await _save();
+    final matches = entries.where((e) => e.id == id);
+    if (matches.isEmpty) return;
+    final transferId = matches.first.transferId;
+    await _commit(
+      [...accounts],
+      entries
+          .where(
+            (e) =>
+                e.id != id &&
+                (transferId.isEmpty || e.transferId != transferId),
+          )
+          .toList(),
+    );
   }
 
   int balance(String id) =>
@@ -186,6 +301,7 @@ class Ledger extends ChangeNotifier {
   int _sum(DateTime month, bool income) => entries
       .where(
         (e) =>
+            e.transferId.isEmpty &&
             e.income == income &&
             e.date.year == month.year &&
             e.date.month == month.month,
