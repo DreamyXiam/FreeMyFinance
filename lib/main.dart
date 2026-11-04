@@ -4,12 +4,15 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ledger.dart';
 import 'reports.dart';
 import 'csv_export.dart';
 import 'backup_crypto.dart';
 import 'xlsx_export.dart';
+import 'reminders.dart';
 
 const navy = Color(0xff142946),
     teal = Color(0xff007f83),
@@ -51,6 +54,13 @@ class FinanceApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
     title: 'FreeMyFinance',
+    locale: const Locale('zh', 'CN'),
+    supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+    localizationsDelegates: const [
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ],
     theme: ThemeData(
       useMaterial3: true,
       colorScheme: ColorScheme.fromSeed(
@@ -446,6 +456,10 @@ class _HomeState extends State<Home> {
                 exportBackup();
               } else if (value == 'encrypted') {
                 exportEncryptedBackup();
+              } else if (value == 'reminders') {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(builder: (_) => const ReminderPage()),
+                );
               } else if (value == 'categories') {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
@@ -474,6 +488,7 @@ class _HomeState extends State<Home> {
               PopupMenuItem(value: 'xlsx', child: Text('导出账单 Excel')),
               PopupMenuItem(value: 'recurring', child: Text('周期账单')),
               PopupMenuItem(value: 'categories', child: Text('分类管理')),
+              PopupMenuItem(value: 'reminders', child: Text('记账提醒')),
             ],
           ),
           IconButton(
@@ -2251,4 +2266,120 @@ class _CategoriesPageState extends State<CategoriesPage> {
       ),
     );
   }
+}
+
+class ReminderPage extends StatefulWidget {
+  const ReminderPage({super.key});
+  @override
+  State<ReminderPage> createState() => _ReminderPageState();
+}
+
+class _ReminderPageState extends State<ReminderPage> {
+  bool enabled = false, busy = true;
+  int minutes = 20 * 60;
+  final service = ReminderService();
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    final p = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        enabled = p.getBool('daily_reminder_enabled') ?? false;
+        minutes = p.getInt('daily_reminder_minutes') ?? 1200;
+        busy = false;
+      });
+    }
+  }
+
+  Future<void> configure() async {
+    final selected = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: minutes ~/ 60, minute: minutes % 60),
+    );
+    if (selected == null || !mounted) return;
+    setState(() => busy = true);
+    try {
+      final value = selected.hour * 60 + selected.minute;
+      final granted = await service.enable(value);
+      if (!mounted) return;
+      setState(() {
+        if (granted) {
+          enabled = true;
+          minutes = value;
+        }
+        busy = false;
+      });
+      if (!granted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('通知权限未开启，请在系统设置中允许通知')));
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => busy = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('设置提醒失败，请检查系统通知权限')));
+      }
+    }
+  }
+
+  Future<void> disable() async {
+    setState(() => busy = true);
+    try {
+      await service.disable();
+      if (mounted) {
+        setState(() {
+          enabled = false;
+          busy = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => busy = false);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('关闭提醒失败，请重试')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('记账提醒')),
+    body: ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        SwitchListTile(
+          title: const Text('每日记账提醒'),
+          subtitle: Text(
+            enabled
+                ? '每天 ${TimeOfDay(hour: minutes ~/ 60, minute: minutes % 60).format(context)}'
+                : '开启后选择提醒时间',
+          ),
+          value: enabled,
+          onChanged: busy
+              ? null
+              : (v) {
+                  if (v) {
+                    configure();
+                  } else {
+                    disable();
+                  }
+                },
+        ),
+        if (enabled)
+          TextButton.icon(
+            onPressed: busy ? null : configure,
+            icon: const Icon(Icons.schedule),
+            label: const Text('更改时间'),
+          ),
+        const Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('提醒内容不包含账单金额。通知时间可能因系统省电设置稍有延迟；周期账单仍需在应用内手动生成。'),
+        ),
+      ],
+    ),
+  );
 }
