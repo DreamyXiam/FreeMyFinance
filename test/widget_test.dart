@@ -13,7 +13,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.widgetWithText(TextFormField, '账户名称'), '我的银行卡');
     await tester.enterText(
-      find.widgetWithText(TextFormField, '初始余额（元）'),
+      find.widgetWithText(TextFormField, '初始余额（可为负）'),
       '100',
     );
     await tester.tap(find.text('保存账户'));
@@ -21,10 +21,7 @@ void main() {
     expect(find.text('¥ 100.00'), findsOneWidget);
     await tester.tap(find.text('记一笔'));
     await tester.pumpAndSettle();
-    await tester.enterText(
-      find.widgetWithText(TextFormField, '金额（元）'),
-      '12.50',
-    );
+    await tester.enterText(find.widgetWithText(TextFormField, '金额'), '12.50');
     await tester.ensureVisible(find.text('保存账单'));
     await tester.tap(find.text('保存账单'));
     await tester.pumpAndSettle();
@@ -35,5 +32,6 @@ void main() {
     expect(parseAmount('12.3'), 1230);
     expect(parseAmount('0.01'), 1);
     expect(parseAmount('1.001'), isNull);
+    expect(parseSignedAmount('-12.30'), -1230);
   });
 }

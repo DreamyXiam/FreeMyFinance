@@ -8,7 +8,8 @@ String _cell(String value, {bool text = true}) {
 
 String exportCsv(List<Account> accounts, List<Entry> entries) {
   final names = {for (final a in accounts) a.id: a.name};
-  final rows = <String>['日期,账户,类型,分类,金额,备注'];
+  final currencies = {for (final a in accounts) a.id: a.currency};
+  final rows = <String>['日期,账户,币种,类型,分类,金额,备注'];
   for (final e in entries) {
     final day =
         '${e.date.year.toString().padLeft(4, '0')}-${e.date.month.toString().padLeft(2, '0')}-${e.date.day.toString().padLeft(2, '0')}';
@@ -21,6 +22,7 @@ String exportCsv(List<Account> accounts, List<Entry> entries) {
       [
         _cell(day),
         _cell(names[e.accountId] ?? '未知账户'),
+        _cell(currencies[e.accountId] ?? 'CNY'),
         _cell(type),
         _cell(e.category),
         _cell(amount, text: false),

@@ -8,11 +8,20 @@ import 'package:flutter/material.dart';
 import 'ledger.dart';
 import 'reports.dart';
 import 'csv_export.dart';
+import 'backup_crypto.dart';
 
 const navy = Color(0xff142946),
     teal = Color(0xff007f83),
     canvas = Color(0xfff2f6f8),
     ink = Color(0xff172d40);
+String currencySymbol(String code) => switch (code) {
+  'CNY' => '¥',
+  'HKD' => 'HK\$',
+  'USD' => 'US\$',
+  'EUR' => '€',
+  'GBP' => '£',
+  _ => code,
+};
 String money(int cents) => (cents / 100).toStringAsFixed(2);
 String uid() => DateTime.now().microsecondsSinceEpoch.toString();
 int? parseAmount(String value) {
@@ -21,6 +30,13 @@ int? parseAmount(String value) {
   final p = s.split('.');
   return int.parse(p[0]) * 100 +
       int.parse(p.length > 1 ? p[1].padRight(2, '0') : '0');
+}
+
+int? parseSignedAmount(String value) {
+  final text = value.trim();
+  if (!text.startsWith('-')) return parseAmount(text);
+  final n = parseAmount(text.substring(1));
+  return n == null ? null : -n;
 }
 
 void main() {
@@ -89,7 +105,7 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   int tab = 0;
-  String search = '', accountFilter = '';
+  String search = '', accountFilter = '', displayCurrency = 'CNY';
   DateTime? monthFilter;
   Ledger get ledger => widget.ledger;
   @override
@@ -149,6 +165,93 @@ class _HomeState extends State<Home> {
     }
   }
 
+  Future<String?> requestBackupPassword({required bool creating}) async {
+    final first = TextEditingController(), confirm = TextEditingController();
+    final form = GlobalKey<FormState>();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(creating ? '设置备份密码' : '输入备份密码'),
+        content: Form(
+          key: form,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(creating ? '密码无法找回，请妥善保管。' : '输入导出时设置的密码。'),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: first,
+                obscureText: true,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: const InputDecoration(labelText: '备份密码'),
+                validator: (v) =>
+                    v == null || v.length < 8 ? '至少输入 8 个字符' : null,
+              ),
+              if (creating) ...[
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: confirm,
+                  obscureText: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  decoration: const InputDecoration(labelText: '确认密码'),
+                  validator: (v) => v != first.text ? '两次密码不一致' : null,
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (form.currentState!.validate()) Navigator.pop(c, first.text);
+            },
+            child: const Text('继续'),
+          ),
+        ],
+      ),
+    );
+    first.dispose();
+    confirm.dispose();
+    return result;
+  }
+
+  Future<void> exportEncryptedBackup() async {
+    final password = await requestBackupPassword(creating: true);
+    if (password == null || !mounted) return;
+    try {
+      final encrypted = await encryptBackup(ledger.exportBackup(), password);
+      if (!mounted) return;
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null
+          ? null
+          : box.localToGlobal(Offset.zero) & box.size;
+      await SharePlus.instance.share(
+        ShareParams(
+          title: '导出加密备份',
+          files: [
+            XFile.fromData(
+              Uint8List.fromList(utf8.encode(encrypted)),
+              mimeType: 'application/json',
+            ),
+          ],
+          fileNameOverrides: ['FreeMyFinance-encrypted-backup.json'],
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('加密导出失败，请重试')));
+      }
+    }
+  }
+
   Future<void> exportTransactions() async {
     try {
       final bytes = [
@@ -190,8 +293,15 @@ class _HomeState extends State<Home> {
       if (bytes.length > 10 * 1024 * 1024) {
         throw const FormatException('备份文件超过 10 MB');
       }
-      final contents = utf8.decode(bytes);
+      var contents = utf8.decode(bytes);
       if (!mounted) return;
+      final envelope = jsonDecode(contents);
+      if (envelope is Map && envelope['format'] == 'FreeMyFinanceEncrypted') {
+        final password = await requestBackupPassword(creating: false);
+        if (password == null || !mounted) return;
+        contents = await decryptBackup(contents, password);
+        if (!mounted) return;
+      }
       final confirm = await showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
@@ -275,10 +385,9 @@ class _HomeState extends State<Home> {
               ));
     }).toList();
     final now = DateTime.now();
-    final total = ledger.accounts.fold<int>(
-      0,
-      (s, a) => s + ledger.balance(a.id),
-    );
+    final total = ledger.accounts
+        .where((a) => a.currency == displayCurrency)
+        .fold<int>(0, (s, a) => s + ledger.balance(a.id));
     return Scaffold(
       appBar: AppBar(
         backgroundColor: canvas,
@@ -306,6 +415,8 @@ class _HomeState extends State<Home> {
             onSelected: (value) {
               if (value == 'export') {
                 exportBackup();
+              } else if (value == 'encrypted') {
+                exportEncryptedBackup();
               } else if (value == 'csv') {
                 exportTransactions();
               } else {
@@ -313,7 +424,8 @@ class _HomeState extends State<Home> {
               }
             },
             itemBuilder: (context) => const [
-              PopupMenuItem(value: 'export', child: Text('导出备份')),
+              PopupMenuItem(value: 'encrypted', child: Text('导出加密备份')),
+              PopupMenuItem(value: 'export', child: Text('导出未加密备份')),
               PopupMenuItem(value: 'import', child: Text('恢复备份')),
               PopupMenuItem(value: 'csv', child: Text('导出账单 CSV')),
             ],
@@ -355,7 +467,7 @@ class _HomeState extends State<Home> {
                           ),
                           SizedBox(width: 8),
                           Text(
-                            '账户总余额 · CNY',
+                            '账户余额',
                             style: TextStyle(
                               color: Color(0xffb8c9d3),
                               fontSize: 13,
@@ -363,9 +475,25 @@ class _HomeState extends State<Home> {
                           ),
                         ],
                       ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: DropdownButton<String>(
+                          value: displayCurrency,
+                          dropdownColor: navy,
+                          style: const TextStyle(color: Colors.white),
+                          items: Account.supportedCurrencies
+                              .map(
+                                (v) =>
+                                    DropdownMenuItem(value: v, child: Text(v)),
+                              )
+                              .toList(),
+                          onChanged: (v) =>
+                              setState(() => displayCurrency = v!),
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       Text(
-                        '¥ ${money(total)}',
+                        '${currencySymbol(displayCurrency)} ${money(total)}',
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 34,
@@ -379,7 +507,11 @@ class _HomeState extends State<Home> {
                           Expanded(
                             child: Summary(
                               label: '本月收入',
-                              amount: ledger.incomeFor(now),
+                              amount: ledger.incomeFor(
+                                now,
+                                currency: displayCurrency,
+                              ),
+                              currency: displayCurrency,
                             ),
                           ),
                           Container(
@@ -391,7 +523,11 @@ class _HomeState extends State<Home> {
                           Expanded(
                             child: Summary(
                               label: '本月支出',
-                              amount: ledger.expenseFor(now),
+                              amount: ledger.expenseFor(
+                                now,
+                                currency: displayCurrency,
+                              ),
+                              currency: displayCurrency,
                             ),
                           ),
                         ],
@@ -585,7 +721,7 @@ class _HomeState extends State<Home> {
                             ),
                           ),
                           Text(
-                            '¥ ${money(ledger.balance(a.id))}',
+                            '${currencySymbol(a.currency)} ${money(ledger.balance(a.id))}',
                             style: const TextStyle(
                               fontWeight: FontWeight.w800,
                               fontSize: 18,
@@ -733,7 +869,13 @@ class _HomeState extends State<Home> {
 class Summary extends StatelessWidget {
   final String label;
   final int amount;
-  const Summary({super.key, required this.label, required this.amount});
+  final String currency;
+  const Summary({
+    super.key,
+    required this.label,
+    required this.amount,
+    this.currency = 'CNY',
+  });
   @override
   Widget build(BuildContext c) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -744,7 +886,7 @@ class Summary extends StatelessWidget {
       ),
       const SizedBox(height: 6),
       Text(
-        '¥ ${money(amount)}',
+        '${currencySymbol(currency)} ${money(amount)}',
         style: const TextStyle(
           color: Colors.white,
           fontSize: 16,
@@ -864,7 +1006,7 @@ class EntryTile extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                '${entry.income ? '+' : '−'}¥${money(entry.cents)}',
+                '${entry.income ? '+' : '−'}${currencySymbol(names.isEmpty ? 'CNY' : names.first.currency)}${money(entry.cents)}',
                 style: TextStyle(
                   fontWeight: FontWeight.w800,
                   color: entry.income ? teal : ink,
@@ -898,6 +1040,7 @@ class _AccountFormState extends State<AccountForm> {
       opening = TextEditingController(text: '0'),
       imageUrl = TextEditingController();
   bool saving = false;
+  String currency = 'CNY';
   @override
   void initState() {
     super.initState();
@@ -906,6 +1049,7 @@ class _AccountFormState extends State<AccountForm> {
       name.text = a.name;
       opening.text = money(a.openingCents);
       imageUrl.text = a.imageUrl;
+      currency = a.currency;
     }
   }
 
@@ -952,14 +1096,30 @@ class _AccountFormState extends State<AccountForm> {
                   v == null || v.trim().isEmpty ? '请输入账户名称' : null,
             ),
             const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: currency,
+              decoration: const InputDecoration(labelText: '币种'),
+              items: Account.supportedCurrencies
+                  .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+                  .toList(),
+              onChanged:
+                  widget.account != null &&
+                      widget.ledger.entries.any(
+                        (e) => e.accountId == widget.account!.id,
+                      )
+                  ? null
+                  : (v) => setState(() => currency = v!),
+            ),
+            const SizedBox(height: 12),
             TextFormField(
               controller: opening,
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
+                signed: true,
               ),
-              decoration: const InputDecoration(labelText: '初始余额（元）'),
+              decoration: const InputDecoration(labelText: '初始余额（可为负）'),
               validator: (v) =>
-                  parseAmount(v ?? '') == null ? '请输入有效金额，最多两位小数' : null,
+                  parseSignedAmount(v ?? '') == null ? '请输入有效金额，最多两位小数' : null,
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -986,8 +1146,9 @@ class _AccountFormState extends State<AccountForm> {
                         final account = Account(
                           id: widget.account?.id ?? uid(),
                           name: name.text.trim(),
-                          openingCents: parseAmount(opening.text)!,
+                          openingCents: parseSignedAmount(opening.text)!,
                           imageUrl: imageUrl.text.trim(),
+                          currency: currency,
                         );
                         if (widget.account == null) {
                           await widget.ledger.addAccount(account);
@@ -1103,8 +1264,8 @@ class _EntryFormState extends State<EntryForm> {
                   decimal: true,
                 ),
                 decoration: const InputDecoration(
-                  labelText: '金额（元）',
-                  prefixText: '¥ ',
+                  labelText: '金额',
+                  prefixText: '',
                 ),
                 validator: (v) {
                   final n = parseAmount(v ?? '');
@@ -1227,7 +1388,7 @@ class ReportView extends StatefulWidget {
 
 class _ReportViewState extends State<ReportView> {
   int year = DateTime.now().year, month = DateTime.now().month;
-  String account = '';
+  String account = '', currency = 'CNY';
   Future<void> setBudget() async {
     final controller = TextEditingController(
       text: money(widget.ledger.monthlyBudgetCents),
@@ -1282,7 +1443,10 @@ class _ReportViewState extends State<ReportView> {
       year,
       ...widget.ledger.entries.map((e) => e.date.year),
     }.toList()..sort((a, b) => b.compareTo(a));
-    final selectedAccount = widget.ledger.accounts.any((a) => a.id == account)
+    final selectedAccount =
+        widget.ledger.accounts.any(
+          (a) => a.id == account && a.currency == currency,
+        )
         ? account
         : '';
     final r = Report.calculate(
@@ -1290,6 +1454,10 @@ class _ReportViewState extends State<ReportView> {
       year: year,
       month: month == 0 ? null : month,
       accountId: selectedAccount.isEmpty ? null : selectedAccount,
+      allowedAccountIds: widget.ledger.accounts
+          .where((a) => a.currency == currency)
+          .map((a) => a.id)
+          .toSet(),
     );
     final rows = r.categories.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
@@ -1297,6 +1465,18 @@ class _ReportViewState extends State<ReportView> {
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
         const PageTitle('统计', '按时间和账户查看收支'),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          initialValue: currency,
+          decoration: const InputDecoration(labelText: '统计币种'),
+          items: Account.supportedCurrencies
+              .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+              .toList(),
+          onChanged: (v) => setState(() {
+            currency = v!;
+            account = '';
+          }),
+        ),
         const SizedBox(height: 12),
         Card(
           child: ListTile(
@@ -1348,13 +1528,14 @@ class _ReportViewState extends State<ReportView> {
         ),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
+          key: ValueKey('report-account-$currency-$selectedAccount'),
           initialValue: selectedAccount,
           decoration: const InputDecoration(labelText: '账户'),
           items: [
             const DropdownMenuItem(value: '', child: Text('全部账户')),
-            ...widget.ledger.accounts.map(
-              (a) => DropdownMenuItem(value: a.id, child: Text(a.name)),
-            ),
+            ...widget.ledger.accounts
+                .where((a) => a.currency == currency)
+                .map((a) => DropdownMenuItem(value: a.id, child: Text(a.name))),
           ],
           onChanged: (v) => setState(() => account = v ?? ''),
         ),
@@ -1368,10 +1549,18 @@ class _ReportViewState extends State<ReportView> {
           child: Row(
             children: [
               Expanded(
-                child: Summary(label: '收入', amount: r.income),
+                child: Summary(
+                  label: '收入',
+                  amount: r.income,
+                  currency: currency,
+                ),
               ),
               Expanded(
-                child: Summary(label: '支出', amount: r.expenses),
+                child: Summary(
+                  label: '支出',
+                  amount: r.expenses,
+                  currency: currency,
+                ),
               ),
             ],
           ),
@@ -1400,7 +1589,7 @@ class _ReportViewState extends State<ReportView> {
                 subtitle: LinearProgressIndicator(
                   value: r.expenses == 0 ? 0 : e.value / r.expenses,
                 ),
-                trailing: Text('¥ ${money(e.value)}'),
+                trailing: Text('${currencySymbol(currency)} ${money(e.value)}'),
               ),
             ),
           ),
@@ -1418,7 +1607,9 @@ class TransferForm extends StatefulWidget {
 
 class _TransferFormState extends State<TransferForm> {
   final form = GlobalKey<FormState>();
-  final amount = TextEditingController(), note = TextEditingController();
+  final amount = TextEditingController(),
+      note = TextEditingController(),
+      received = TextEditingController();
   late String from, to;
   DateTime date = DateTime.now();
   bool saving = false;
@@ -1433,6 +1624,7 @@ class _TransferFormState extends State<TransferForm> {
   void dispose() {
     amount.dispose();
     note.dispose();
+    received.dispose();
     super.dispose();
   }
 
@@ -1487,13 +1679,32 @@ class _TransferFormState extends State<TransferForm> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              decoration: const InputDecoration(labelText: '转账金额（元）'),
+              decoration: const InputDecoration(labelText: '转出金额'),
               validator: (v) {
                 final n = parseAmount(v ?? '');
                 return n == null || n <= 0 ? '请输入大于零的金额' : null;
               },
             ),
             const SizedBox(height: 12),
+            if (widget.ledger.accounts
+                    .firstWhere((a) => a.id == from)
+                    .currency !=
+                widget.ledger.accounts
+                    .firstWhere((a) => a.id == to)
+                    .currency) ...[
+              TextFormField(
+                controller: received,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(labelText: '实际到账金额（转入币种）'),
+                validator: (v) {
+                  final n = parseAmount(v ?? '');
+                  return n == null || n <= 0 ? '请输入实际到账金额' : null;
+                },
+              ),
+              const SizedBox(height: 12),
+            ],
             TextFormField(
               controller: note,
               maxLength: 80,
@@ -1534,6 +1745,15 @@ class _TransferFormState extends State<TransferForm> {
                           from: from,
                           to: to,
                           cents: parseAmount(amount.text)!,
+                          toCents:
+                              widget.ledger.accounts
+                                      .firstWhere((a) => a.id == from)
+                                      .currency ==
+                                  widget.ledger.accounts
+                                      .firstWhere((a) => a.id == to)
+                                      .currency
+                              ? null
+                              : parseAmount(received.text),
                           date: date,
                           note: note.text.trim(),
                         );

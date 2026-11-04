@@ -9,11 +9,14 @@ class Report {
     required int year,
     int? month,
     String? accountId,
+    Set<String>? allowedAccountIds,
   }) {
     var income = 0, expenses = 0;
     final categories = <String, int>{};
     for (final e in entries) {
-      if (e.transferId.isNotEmpty ||
+      if ((allowedAccountIds != null &&
+              !allowedAccountIds.contains(e.accountId)) ||
+          e.transferId.isNotEmpty ||
           e.date.year != year ||
           (month != null && e.date.month != month) ||
           (accountId != null && e.accountId != accountId)) {

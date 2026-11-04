@@ -4,25 +4,29 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class Account {
-  final String id, name, imageUrl;
+  static const supportedCurrencies = ['CNY', 'HKD', 'USD', 'EUR', 'GBP'];
+  final String id, name, imageUrl, currency;
   final int openingCents;
   Account({
     required this.id,
     required this.name,
     required this.openingCents,
     this.imageUrl = '',
+    this.currency = 'CNY',
   });
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
     'openingCents': openingCents,
     'imageUrl': imageUrl,
+    'currency': currency,
   };
   factory Account.fromJson(Map<String, dynamic> j) => Account(
     id: j['id'],
     name: j['name'],
     openingCents: j['openingCents'],
     imageUrl: j['imageUrl'] ?? '',
+    currency: j['currency'] ?? 'CNY',
   );
 }
 
@@ -68,6 +72,7 @@ class Ledger extends ChangeNotifier {
   final List<Account> accounts;
   final List<Entry> entries;
   int monthlyBudgetCents;
+  bool _saving = false;
   Ledger._(
     this._prefs,
     this.accounts,
@@ -92,28 +97,34 @@ class Ledger extends ChangeNotifier {
     List<Entry> nextEntries, {
     int? budget,
   }) async {
-    final ok = await _prefs.setString(
-      'ledger_v1',
-      jsonEncode({
-        'accounts': nextAccounts.map((a) => a.toJson()).toList(),
-        'entries': nextEntries.map((e) => e.toJson()).toList(),
-        'monthlyBudgetCents': budget ?? monthlyBudgetCents,
-      }),
-    );
-    if (!ok) throw StateError('保存失败');
-    monthlyBudgetCents = budget ?? monthlyBudgetCents;
-    accounts
-      ..clear()
-      ..addAll(nextAccounts);
-    entries
-      ..clear()
-      ..addAll(nextEntries);
-    notifyListeners();
+    if (_saving) throw StateError('已有操作正在保存，请重试');
+    _saving = true;
+    try {
+      final ok = await _prefs.setString(
+        'ledger_v1',
+        jsonEncode({
+          'accounts': nextAccounts.map((a) => a.toJson()).toList(),
+          'entries': nextEntries.map((e) => e.toJson()).toList(),
+          'monthlyBudgetCents': budget ?? monthlyBudgetCents,
+        }),
+      );
+      if (!ok) throw StateError('保存失败');
+      monthlyBudgetCents = budget ?? monthlyBudgetCents;
+      accounts
+        ..clear()
+        ..addAll(nextAccounts);
+      entries
+        ..clear()
+        ..addAll(nextEntries);
+      notifyListeners();
+    } finally {
+      _saving = false;
+    }
   }
 
   String exportBackup() => jsonEncode({
     'format': 'FreeMyFinance',
-    'version': 3,
+    'version': 4,
     'monthlyBudgetCents': monthlyBudgetCents,
     'accounts': accounts.map((a) => a.toJson()).toList(),
     'entries': entries.map((e) => e.toJson()).toList(),
@@ -126,7 +137,8 @@ class Ledger extends ChangeNotifier {
           data['format'] != 'FreeMyFinance' ||
           (data['version'] != 1 &&
               data['version'] != 2 &&
-              data['version'] != 3) ||
+              data['version'] != 3 &&
+              data['version'] != 4) ||
           data['accounts'] is! List ||
           data['entries'] is! List) {
         throw const FormatException('无效的备份格式');
@@ -142,8 +154,9 @@ class Ledger extends ChangeNotifier {
             item['name'] is! String ||
             (item['name'] as String).trim().isEmpty ||
             item['openingCents'] is! int ||
-            (item['openingCents'] as int) < 0 ||
-            (item['imageUrl'] != null && item['imageUrl'] is! String)) {
+            (item['imageUrl'] != null && item['imageUrl'] is! String) ||
+            (item['currency'] != null &&
+                !Account.supportedCurrencies.contains(item['currency']))) {
           throw const FormatException('账户数据无效');
         }
         final a = Account.fromJson(item);
@@ -180,25 +193,18 @@ class Ledger extends ChangeNotifier {
         final pair = newEntries.where((e) => e.transferId == id).toList();
         if (pair.length != 2 ||
             pair[0].income == pair[1].income ||
-            pair[0].cents != pair[1].cents ||
-            pair[0].accountId == pair[1].accountId) {
+            pair[0].accountId == pair[1].accountId ||
+            (newAccounts
+                        .firstWhere((a) => a.id == pair[0].accountId)
+                        .currency ==
+                    newAccounts
+                        .firstWhere((a) => a.id == pair[1].accountId)
+                        .currency &&
+                pair[0].cents != pair[1].cents)) {
           throw const FormatException('转账数据无效');
         }
       }
-      final raw = jsonEncode({
-        'accounts': newAccounts.map((a) => a.toJson()).toList(),
-        'entries': newEntries.map((e) => e.toJson()).toList(),
-        'monthlyBudgetCents': budget,
-      });
-      if (!await _prefs.setString('ledger_v1', raw)) throw StateError('保存失败');
-      monthlyBudgetCents = budget;
-      accounts
-        ..clear()
-        ..addAll(newAccounts);
-      entries
-        ..clear()
-        ..addAll(newEntries);
-      notifyListeners();
+      await _commit(newAccounts, newEntries, budget: budget);
     } on FormatException {
       rethrow;
     } on TypeError {
@@ -212,12 +218,20 @@ class Ledger extends ChangeNotifier {
   }
 
   Future<void> addAccount(Account a) async {
-    if (accounts.any((x) => x.id == a.id)) throw StateError('账户编号重复');
+    if (accounts.any((x) => x.id == a.id) ||
+        !Account.supportedCurrencies.contains(a.currency)) {
+      throw StateError('账户无效');
+    }
     await _commit([...accounts, a], [...entries]);
   }
 
   Future<void> updateAccount(Account a) async {
     if (!accounts.any((x) => x.id == a.id)) throw StateError('账户不存在');
+    if (!Account.supportedCurrencies.contains(a.currency) ||
+        (accounts.firstWhere((x) => x.id == a.id).currency != a.currency &&
+            entries.any((e) => e.accountId == a.id))) {
+      throw StateError('有关联账单的账户不能更改币种');
+    }
     await _commit(
       [
         for (final x in accounts)
@@ -263,6 +277,7 @@ class Ledger extends ChangeNotifier {
     required String from,
     required String to,
     required int cents,
+    int? toCents,
     required DateTime date,
     required String note,
   }) async {
@@ -275,6 +290,17 @@ class Ledger extends ChangeNotifier {
           (e) => e.transferId == id || e.id == '$id-out' || e.id == '$id-in',
         )) {
       throw StateError('转账信息无效');
+    }
+    final sourceCurrency = accounts.firstWhere((a) => a.id == from).currency;
+    final destinationCurrency = accounts.firstWhere((a) => a.id == to).currency;
+    if (sourceCurrency != destinationCurrency &&
+        (toCents == null || toCents <= 0)) {
+      throw StateError('跨币种转账需要填写实际到账金额');
+    }
+    if (sourceCurrency == destinationCurrency &&
+        toCents != null &&
+        toCents != cents) {
+      throw StateError('同币种转账金额必须一致');
     }
     final out = Entry(
       id: '$id-out',
@@ -289,7 +315,7 @@ class Ledger extends ChangeNotifier {
     final incoming = Entry(
       id: '$id-in',
       accountId: to,
-      cents: cents,
+      cents: toCents ?? cents,
       income: true,
       category: '账户转账',
       note: note,
@@ -320,15 +346,20 @@ class Ledger extends ChangeNotifier {
       entries
           .where((e) => e.accountId == id)
           .fold(0, (int s, e) => s + (e.income ? e.cents : -e.cents));
-  int _sum(DateTime month, bool income) => entries
+  int _sum(DateTime month, bool income, String currency) => entries
       .where(
         (e) =>
             e.transferId.isEmpty &&
+            accounts.any(
+              (a) => a.id == e.accountId && a.currency == currency,
+            ) &&
             e.income == income &&
             e.date.year == month.year &&
             e.date.month == month.month,
       )
       .fold(0, (int s, e) => s + e.cents);
-  int incomeFor(DateTime month) => _sum(month, true);
-  int expenseFor(DateTime month) => _sum(month, false);
+  int incomeFor(DateTime month, {String currency = 'CNY'}) =>
+      _sum(month, true, currency);
+  int expenseFor(DateTime month, {String currency = 'CNY'}) =>
+      _sum(month, false, currency);
 }
