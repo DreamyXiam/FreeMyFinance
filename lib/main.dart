@@ -9,6 +9,7 @@ import 'ledger.dart';
 import 'reports.dart';
 import 'csv_export.dart';
 import 'backup_crypto.dart';
+import 'xlsx_export.dart';
 
 const navy = Color(0xff142946),
     teal = Color(0xff007f83),
@@ -282,6 +283,34 @@ class _HomeState extends State<Home> {
     }
   }
 
+  Future<void> exportExcel() async {
+    try {
+      final bytes = exportXlsx(ledger.accounts, ledger.entries);
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null
+          ? null
+          : box.localToGlobal(Offset.zero) & box.size;
+      await SharePlus.instance.share(
+        ShareParams(
+          title: '导出账单 Excel',
+          files: [
+            XFile.fromData(
+              Uint8List.fromList(bytes),
+              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ),
+          ],
+          fileNameOverrides: ['FreeMyFinance-transactions.xlsx'],
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('导出失败，请重试')));
+      }
+    }
+  }
+
   Future<void> importBackup() async {
     try {
       final file = await FilePicker.pickFile();
@@ -417,6 +446,20 @@ class _HomeState extends State<Home> {
                 exportBackup();
               } else if (value == 'encrypted') {
                 exportEncryptedBackup();
+              } else if (value == 'categories') {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => CategoriesPage(ledger: ledger),
+                  ),
+                );
+              } else if (value == 'recurring') {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => RecurringPage(ledger: ledger),
+                  ),
+                );
+              } else if (value == 'xlsx') {
+                exportExcel();
               } else if (value == 'csv') {
                 exportTransactions();
               } else {
@@ -428,6 +471,9 @@ class _HomeState extends State<Home> {
               PopupMenuItem(value: 'export', child: Text('导出未加密备份')),
               PopupMenuItem(value: 'import', child: Text('恢复备份')),
               PopupMenuItem(value: 'csv', child: Text('导出账单 CSV')),
+              PopupMenuItem(value: 'xlsx', child: Text('导出账单 Excel')),
+              PopupMenuItem(value: 'recurring', child: Text('周期账单')),
+              PopupMenuItem(value: 'categories', child: Text('分类管理')),
             ],
           ),
           IconButton(
@@ -808,9 +854,10 @@ class _HomeState extends State<Home> {
   }
 
   Future<void> deleteAccount(Account account) async {
-    if (ledger.entries.any((e) => e.accountId == account.id)) {
+    if (ledger.entries.any((e) => e.accountId == account.id) ||
+        ledger.recurring.any((r) => r.accountId == account.id)) {
       ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('账户仍有关联账单，请先处理账单')));
+          .showSnackBar(const SnackBar(content: Text('账户仍有关联账单或周期规则，请先处理')));
       return;
     }
     final yes = await showDialog<bool>(
@@ -1777,4 +1824,431 @@ class _TransferFormState extends State<TransferForm> {
       ),
     ),
   );
+}
+
+class RecurringPage extends StatefulWidget {
+  final Ledger ledger;
+  const RecurringPage({super.key, required this.ledger});
+  @override
+  State<RecurringPage> createState() => _RecurringPageState();
+}
+
+class _RecurringPageState extends State<RecurringPage> {
+  @override
+  void initState() {
+    super.initState();
+    widget.ledger.addListener(refresh);
+  }
+
+  @override
+  void dispose() {
+    widget.ledger.removeListener(refresh);
+    super.dispose();
+  }
+
+  void refresh() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> addRule() async {
+    if (widget.ledger.accounts.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请先添加账户')));
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => RecurringForm(ledger: widget.ledger),
+    );
+  }
+
+  Future<void> apply() async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('生成到期账单？'),
+        content: const Text('将按周期规则生成截至今天的账单。已生成的月份不会重复生成。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('生成'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true) return;
+    try {
+      final count = await widget.ledger.applyRecurring(DateTime.now());
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('已生成 $count 笔账单')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('生成失败，请检查规则或稍后重试')));
+      }
+    }
+  }
+
+  Future<void> remove(Recurring rule) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('删除周期规则？'),
+        content: const Text('已生成的账单会保留。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (yes == true) {
+      try {
+        await widget.ledger.deleteRecurring(rule.id);
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('删除失败，请重试')));
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('周期账单')),
+    floatingActionButton: FloatingActionButton.extended(
+      onPressed: addRule,
+      icon: const Icon(Icons.add),
+      label: const Text('添加规则'),
+    ),
+    body: ListView(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
+      children: [
+        const Text('按月设置，打开应用后手动生成到期账单。不会发送系统通知。'),
+        const SizedBox(height: 10),
+        FilledButton.tonal(
+          onPressed: widget.ledger.recurring.isEmpty ? null : apply,
+          child: const Text('生成至今天'),
+        ),
+        if (widget.ledger.recurring.isEmpty)
+          const EmptyState(
+            icon: Icons.repeat,
+            title: '还没有周期规则',
+            subtitle: '可以添加每月固定收入或支出。',
+          )
+        else
+          ...widget.ledger.recurring.map((r) {
+            final a = widget.ledger.accounts.firstWhere(
+              (a) => a.id == r.accountId,
+            );
+            final date =
+                '${r.nextDate.year}-${r.nextDate.month.toString().padLeft(2, '0')}-${r.nextDate.day.toString().padLeft(2, '0')}';
+            return Card(
+              child: ListTile(
+                title: Text(
+                  '${r.category} · ${r.income ? '收入' : '支出'} ${currencySymbol(a.currency)}${money(r.cents)}',
+                ),
+                subtitle: Text('${a.name} · 每月 ${r.day} 日 · 下次 $date'),
+                trailing: IconButton(
+                  onPressed: () => remove(r),
+                  tooltip: '删除规则',
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ),
+            );
+          }),
+      ],
+    ),
+  );
+}
+
+class RecurringForm extends StatefulWidget {
+  final Ledger ledger;
+  const RecurringForm({super.key, required this.ledger});
+  @override
+  State<RecurringForm> createState() => _RecurringFormState();
+}
+
+class _RecurringFormState extends State<RecurringForm> {
+  final form = GlobalKey<FormState>();
+  final amount = TextEditingController(),
+      category = TextEditingController(text: '其他支出'),
+      note = TextEditingController();
+  late String account;
+  bool income = false, saving = false;
+  DateTime start = DateTime.now();
+  @override
+  void initState() {
+    super.initState();
+    account = widget.ledger.accounts.first.id;
+    start = DateTime(start.year, start.month, start.day);
+  }
+
+  @override
+  void dispose() {
+    amount.dispose();
+    category.dispose();
+    note.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: EdgeInsets.fromLTRB(
+      22,
+      4,
+      22,
+      MediaQuery.viewInsetsOf(context).bottom + 24,
+    ),
+    child: Form(
+      key: form,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '添加周期账单',
+              style: TextStyle(
+                fontSize: 23,
+                fontWeight: FontWeight.w800,
+                color: ink,
+              ),
+            ),
+            const SizedBox(height: 14),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('支出')),
+                ButtonSegment(value: true, label: Text('收入')),
+              ],
+              selected: {income},
+              onSelectionChanged: (v) => setState(() {
+                income = v.first;
+                category.text = income ? '其他收入' : '其他支出';
+              }),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: account,
+              decoration: const InputDecoration(labelText: '账户'),
+              items: widget.ledger.accounts
+                  .map(
+                    (a) => DropdownMenuItem(
+                      value: a.id,
+                      child: Text('${a.name} · ${a.currency}'),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (v) => setState(() => account = v!),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: amount,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(labelText: '金额'),
+              validator: (v) {
+                final n = parseAmount(v ?? '');
+                return n == null || n <= 0 ? '请输入大于零的金额' : null;
+              },
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: category,
+              maxLength: 30,
+              decoration: const InputDecoration(labelText: '分类'),
+              validator: (v) => v == null || v.trim().isEmpty ? '请输入分类' : null,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: note,
+              maxLength: 80,
+              decoration: const InputDecoration(labelText: '备注（选填）'),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('首次日期'),
+              subtitle: Text(
+                '${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')} · 每月 ${start.day} 日，短月按月末',
+              ),
+              trailing: const Icon(Icons.calendar_today_outlined),
+              onTap: () async {
+                final d = await showDatePicker(
+                  context: context,
+                  initialDate: start,
+                  firstDate: DateTime(2000),
+                  lastDate: DateTime(2100),
+                );
+                if (d != null && mounted) setState(() => start = d);
+              },
+            ),
+            FilledButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      if (!form.currentState!.validate()) return;
+                      setState(() => saving = true);
+                      try {
+                        await widget.ledger.addRecurring(
+                          Recurring(
+                            id: uid(),
+                            accountId: account,
+                            cents: parseAmount(amount.text)!,
+                            income: income,
+                            category: category.text.trim(),
+                            note: note.text.trim(),
+                            day: start.day,
+                            nextDate: start,
+                          ),
+                        );
+                        if (context.mounted) Navigator.pop(context);
+                      } catch (_) {
+                        if (context.mounted) {
+                          setState(() => saving = false);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('保存失败，请重试')),
+                          );
+                        }
+                      }
+                    },
+              child: const Padding(
+                padding: EdgeInsets.all(14),
+                child: Text('保存规则'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class CategoriesPage extends StatefulWidget {
+  final Ledger ledger;
+  const CategoriesPage({super.key, required this.ledger});
+  @override
+  State<CategoriesPage> createState() => _CategoriesPageState();
+}
+
+class _CategoriesPageState extends State<CategoriesPage> {
+  @override
+  void initState() {
+    super.initState();
+    widget.ledger.addListener(refresh);
+  }
+
+  @override
+  void dispose() {
+    widget.ledger.removeListener(refresh);
+    super.dispose();
+  }
+
+  void refresh() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> rename(String oldName) async {
+    final controller = TextEditingController(text: oldName);
+    final form = GlobalKey<FormState>();
+    final next = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('重命名分类'),
+        content: Form(
+          key: form,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('将同时修改所有使用该名称的账单和周期规则。'),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: controller,
+                maxLength: 30,
+                decoration: const InputDecoration(labelText: '分类名称'),
+                validator: (v) =>
+                    v == null || v.trim().isEmpty ? '请输入分类名称' : null,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (form.currentState!.validate()) {
+                Navigator.pop(c, controller.text.trim());
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (next == null || next == oldName) return;
+    try {
+      await widget.ledger.renameCategory(oldName, next);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('修改失败，请重试')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final categories = {
+      ...widget.ledger.entries
+          .where((e) => e.transferId.isEmpty)
+          .map((e) => e.category),
+      ...widget.ledger.recurring.map((r) => r.category),
+    }.toList()..sort();
+    return Scaffold(
+      appBar: AppBar(title: const Text('分类管理')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const Text('账单中输入的分类会自动显示在这里；可重命名或合并到已有分类。'),
+          if (categories.isEmpty)
+            const EmptyState(
+              icon: Icons.category_outlined,
+              title: '暂无分类',
+              subtitle: '记账时输入分类即可添加。',
+            )
+          else
+            ...categories.map(
+              (name) => Card(
+                child: ListTile(
+                  title: Text(name),
+                  trailing: IconButton(
+                    tooltip: '重命名分类',
+                    icon: const Icon(Icons.edit_outlined),
+                    onPressed: () => rename(name),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }

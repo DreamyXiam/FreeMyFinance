@@ -3,7 +3,7 @@
     <application
         android:label="FreeMyFinance"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@drawable/ic_brand">
         <activity
             android:name=".MainActivity"
             android:exported="true"

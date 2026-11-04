@@ -1,5 +1,6 @@
 name: free_my_finance
-description: "A new Flutter project."
+description: "A local-first personal finance and account ledger app."
+repository: https://github.com/DreamyXiam/FreeMyFinance
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -39,7 +40,8 @@ dependencies:
   share_plus: ^13.3.1
   path_provider: ^2.1.6
   cryptography: ^2.9.0
-
+  excel: ^4.0.6
+  archive: ^3.6.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
