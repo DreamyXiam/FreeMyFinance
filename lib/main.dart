@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import 'ledger.dart';
 import 'reports.dart';
+import 'csv_export.dart';
 
 const navy = Color(0xff142946),
     teal = Color(0xff007f83),
@@ -147,6 +149,36 @@ class _HomeState extends State<Home> {
     }
   }
 
+  Future<void> exportTransactions() async {
+    try {
+      final bytes = [
+        0xef,
+        0xbb,
+        0xbf,
+        ...utf8.encode(exportCsv(ledger.accounts, ledger.entries)),
+      ];
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null
+          ? null
+          : box.localToGlobal(Offset.zero) & box.size;
+      await SharePlus.instance.share(
+        ShareParams(
+          title: '导出账单 CSV',
+          files: [
+            XFile.fromData(Uint8List.fromList(bytes), mimeType: 'text/csv'),
+          ],
+          fileNameOverrides: ['FreeMyFinance-transactions.csv'],
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('导出失败，请重试')));
+      }
+    }
+  }
+
   Future<void> importBackup() async {
     try {
       final file = await FilePicker.pickFile();
@@ -274,6 +306,8 @@ class _HomeState extends State<Home> {
             onSelected: (value) {
               if (value == 'export') {
                 exportBackup();
+              } else if (value == 'csv') {
+                exportTransactions();
               } else {
                 importBackup();
               }
@@ -281,6 +315,7 @@ class _HomeState extends State<Home> {
             itemBuilder: (context) => const [
               PopupMenuItem(value: 'export', child: Text('导出备份')),
               PopupMenuItem(value: 'import', child: Text('恢复备份')),
+              PopupMenuItem(value: 'csv', child: Text('导出账单 CSV')),
             ],
           ),
           IconButton(
@@ -991,7 +1026,9 @@ class EntryForm extends StatefulWidget {
 
 class _EntryFormState extends State<EntryForm> {
   final form = GlobalKey<FormState>();
-  final amount = TextEditingController(), note = TextEditingController();
+  final amount = TextEditingController(),
+      note = TextEditingController(),
+      categoryInput = TextEditingController(text: '餐饮');
   late String account;
   bool income = false, saving = false;
   String category = '餐饮';
@@ -1006,6 +1043,7 @@ class _EntryFormState extends State<EntryForm> {
       note.text = e.note;
       income = e.income;
       category = e.category;
+      categoryInput.text = e.category;
       date = e.date;
     }
   }
@@ -1014,6 +1052,7 @@ class _EntryFormState extends State<EntryForm> {
   void dispose() {
     amount.dispose();
     note.dispose();
+    categoryInput.dispose();
     super.dispose();
   }
 
@@ -1054,6 +1093,7 @@ class _EntryFormState extends State<EntryForm> {
                 onSelectionChanged: (s) => setState(() {
                   income = s.first;
                   category = income ? '工资' : '餐饮';
+                  categoryInput.text = category;
                 }),
               ),
               const SizedBox(height: 16),
@@ -1086,14 +1126,29 @@ class _EntryFormState extends State<EntryForm> {
                 onChanged: (v) => setState(() => account = v!),
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                key: ValueKey(income),
-                initialValue: category,
-                decoration: const InputDecoration(labelText: '分类'),
-                items: categories
-                    .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+              TextFormField(
+                controller: categoryInput,
+                maxLength: 30,
+                decoration: const InputDecoration(
+                  labelText: '分类',
+                  hintText: '选择常用分类或输入新分类',
+                ),
+                validator: (v) =>
+                    v == null || v.trim().isEmpty ? '请输入分类' : null,
+              ),
+              Wrap(
+                spacing: 6,
+                children: categories
+                    .map(
+                      (v) => ActionChip(
+                        label: Text(v),
+                        onPressed: () => setState(() {
+                          category = v;
+                          categoryInput.text = v;
+                        }),
+                      ),
+                    )
                     .toList(),
-                onChanged: (v) => setState(() => category = v!),
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -1131,7 +1186,7 @@ class _EntryFormState extends State<EntryForm> {
                             accountId: account,
                             cents: parseAmount(amount.text)!,
                             income: income,
-                            category: category,
+                            category: categoryInput.text.trim(),
                             note: note.text.trim(),
                             date: date,
                           );
@@ -1173,6 +1228,53 @@ class ReportView extends StatefulWidget {
 class _ReportViewState extends State<ReportView> {
   int year = DateTime.now().year, month = DateTime.now().month;
   String account = '';
+  Future<void> setBudget() async {
+    final controller = TextEditingController(
+      text: money(widget.ledger.monthlyBudgetCents),
+    );
+    final form = GlobalKey<FormState>();
+    final value = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('设置每月预算'),
+        content: Form(
+          key: form,
+          child: TextFormField(
+            controller: controller,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: '预算金额（元，0 为关闭）'),
+            validator: (v) => parseAmount(v ?? '') == null ? '请输入有效金额' : null,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (form.currentState!.validate()) {
+                Navigator.pop(c, parseAmount(controller.text));
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value != null) {
+      try {
+        await widget.ledger.setMonthlyBudget(value);
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('保存预算失败')));
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final years = {
@@ -1195,6 +1297,22 @@ class _ReportViewState extends State<ReportView> {
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
         const PageTitle('统计', '按时间和账户查看收支'),
+        const SizedBox(height: 12),
+        Card(
+          child: ListTile(
+            title: Text(
+              widget.ledger.monthlyBudgetCents == 0
+                  ? '每月预算未设置'
+                  : '本月预算 ¥ ${money(widget.ledger.monthlyBudgetCents)}',
+            ),
+            subtitle: Text(
+              widget.ledger.monthlyBudgetCents == 0
+                  ? '设置每月支出上限'
+                  : '本月支出 ¥ ${money(widget.ledger.expenseFor(DateTime.now()))} · ${widget.ledger.expenseFor(DateTime.now()) > widget.ledger.monthlyBudgetCents ? '已超预算' : '预算内'}',
+            ),
+            trailing: TextButton(onPressed: setBudget, child: const Text('设置')),
+          ),
+        ),
         const SizedBox(height: 18),
         Row(
           children: [

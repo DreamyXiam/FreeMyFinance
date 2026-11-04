@@ -67,7 +67,13 @@ class Ledger extends ChangeNotifier {
   final SharedPreferences _prefs;
   final List<Account> accounts;
   final List<Entry> entries;
-  Ledger._(this._prefs, this.accounts, this.entries);
+  int monthlyBudgetCents;
+  Ledger._(
+    this._prefs,
+    this.accounts,
+    this.entries, [
+    this.monthlyBudgetCents = 0,
+  ]);
   static Future<Ledger> load() async {
     final p = await SharedPreferences.getInstance();
     final raw = p.getString('ledger_v1');
@@ -77,21 +83,25 @@ class Ledger extends ChangeNotifier {
       p,
       (j['accounts'] as List).map((e) => Account.fromJson(e)).toList(),
       (j['entries'] as List).map((e) => Entry.fromJson(e)).toList(),
+      j['monthlyBudgetCents'] ?? 0,
     );
   }
 
   Future<void> _commit(
     List<Account> nextAccounts,
-    List<Entry> nextEntries,
-  ) async {
+    List<Entry> nextEntries, {
+    int? budget,
+  }) async {
     final ok = await _prefs.setString(
       'ledger_v1',
       jsonEncode({
         'accounts': nextAccounts.map((a) => a.toJson()).toList(),
         'entries': nextEntries.map((e) => e.toJson()).toList(),
+        'monthlyBudgetCents': budget ?? monthlyBudgetCents,
       }),
     );
     if (!ok) throw StateError('保存失败');
+    monthlyBudgetCents = budget ?? monthlyBudgetCents;
     accounts
       ..clear()
       ..addAll(nextAccounts);
@@ -103,7 +113,8 @@ class Ledger extends ChangeNotifier {
 
   String exportBackup() => jsonEncode({
     'format': 'FreeMyFinance',
-    'version': 2,
+    'version': 3,
+    'monthlyBudgetCents': monthlyBudgetCents,
     'accounts': accounts.map((a) => a.toJson()).toList(),
     'entries': entries.map((e) => e.toJson()).toList(),
   });
@@ -113,11 +124,15 @@ class Ledger extends ChangeNotifier {
       final data = jsonDecode(text);
       if (data is! Map<String, dynamic> ||
           data['format'] != 'FreeMyFinance' ||
-          (data['version'] != 1 && data['version'] != 2) ||
+          (data['version'] != 1 &&
+              data['version'] != 2 &&
+              data['version'] != 3) ||
           data['accounts'] is! List ||
           data['entries'] is! List) {
         throw const FormatException('无效的备份格式');
       }
+      final budget = data['monthlyBudgetCents'] ?? 0;
+      if (budget is! int || budget < 0) throw const FormatException('预算数据无效');
       final newAccounts = <Account>[];
       final ids = <String>{};
       for (final item in data['accounts'] as List) {
@@ -173,8 +188,10 @@ class Ledger extends ChangeNotifier {
       final raw = jsonEncode({
         'accounts': newAccounts.map((a) => a.toJson()).toList(),
         'entries': newEntries.map((e) => e.toJson()).toList(),
+        'monthlyBudgetCents': budget,
       });
       if (!await _prefs.setString('ledger_v1', raw)) throw StateError('保存失败');
+      monthlyBudgetCents = budget;
       accounts
         ..clear()
         ..addAll(newAccounts);
@@ -187,6 +204,11 @@ class Ledger extends ChangeNotifier {
     } on TypeError {
       throw const FormatException('备份内容无效');
     }
+  }
+
+  Future<void> setMonthlyBudget(int cents) async {
+    if (cents < 0) throw StateError('预算不能为负');
+    await _commit([...accounts], [...entries], budget: cents);
   }
 
   Future<void> addAccount(Account a) async {
