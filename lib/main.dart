@@ -13,6 +13,7 @@ import 'csv_export.dart';
 import 'backup_crypto.dart';
 import 'xlsx_export.dart';
 import 'reminders.dart';
+import 'lock_controller.dart';
 
 const navy = Color(0xff142946),
     teal = Color(0xff007f83),
@@ -48,39 +49,141 @@ void main() {
   runApp(const FinanceApp());
 }
 
-class FinanceApp extends StatelessWidget {
+class FinanceApp extends StatefulWidget {
   const FinanceApp({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    title: 'FreeMyFinance',
-    locale: const Locale('zh', 'CN'),
-    supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
-    localizationsDelegates: const [
-      GlobalMaterialLocalizations.delegate,
-      GlobalWidgetsLocalizations.delegate,
-      GlobalCupertinoLocalizations.delegate,
-    ],
-    theme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: teal,
-        primary: teal,
-        surface: Colors.white,
-      ),
-      scaffoldBackgroundColor: canvas,
-      fontFamilyFallback: const ['Microsoft YaHei', 'PingFang SC'],
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: const Color(0xfff2f6f8),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide.none,
+  State<FinanceApp> createState() => _FinanceAppState();
+}
+
+class _FinanceAppState extends State<FinanceApp> with WidgetsBindingObserver {
+  final lock = LockController();
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    lock.initialize();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    lock.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      lock.lock();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => LockScope(
+    controller: lock,
+    child: MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'FreeMyFinance',
+      locale: const Locale('zh', 'CN'),
+      supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: teal,
+          primary: teal,
+          surface: Colors.white,
+        ),
+        scaffoldBackgroundColor: canvas,
+        fontFamilyFallback: const ['Microsoft YaHei', 'PingFang SC'],
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xfff2f6f8),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide.none,
+          ),
         ),
       ),
+      home: AnimatedBuilder(
+        animation: lock,
+        builder: (context, _) {
+          if (!lock.ready) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (lock.error != null) {
+            return Scaffold(
+              body: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(lock.error!),
+                    TextButton(
+                      onPressed: lock.initialize,
+                      child: const Text('重试'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+          if (lock.locked) {
+            return Scaffold(
+              body: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.lock_outline, size: 48, color: teal),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'FreeMyFinance 已锁定',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: lock.authenticating
+                          ? null
+                          : () async {
+                              final ok = await lock.unlock();
+                              if (!ok && context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('身份验证未通过')),
+                                );
+                              }
+                            },
+                      child: const Text('验证身份并解锁'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+          return const LoadLedger();
+        },
+      ),
     ),
-    home: const LoadLedger(),
   );
+}
+
+class LockScope extends InheritedNotifier<LockController> {
+  const LockScope({
+    super.key,
+    required LockController controller,
+    required super.child,
+  }) : super(notifier: controller);
+  static LockController of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<LockScope>()!.notifier!;
 }
 
 class LoadLedger extends StatelessWidget {
@@ -456,6 +559,13 @@ class _HomeState extends State<Home> {
                 exportBackup();
               } else if (value == 'encrypted') {
                 exportEncryptedBackup();
+              } else if (value == 'lock') {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        LockSettingsPage(controller: LockScope.of(context)),
+                  ),
+                );
               } else if (value == 'reminders') {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(builder: (_) => const ReminderPage()),
@@ -489,6 +599,7 @@ class _HomeState extends State<Home> {
               PopupMenuItem(value: 'recurring', child: Text('周期账单')),
               PopupMenuItem(value: 'categories', child: Text('分类管理')),
               PopupMenuItem(value: 'reminders', child: Text('记账提醒')),
+              PopupMenuItem(value: 'lock', child: Text('应用锁')),
             ],
           ),
           IconButton(
@@ -2380,6 +2491,42 @@ class _ReminderPageState extends State<ReminderPage> {
           child: Text('提醒内容不包含账单金额。通知时间可能因系统省电设置稍有延迟；周期账单仍需在应用内手动生成。'),
         ),
       ],
+    ),
+  );
+}
+
+class LockSettingsPage extends StatelessWidget {
+  final LockController controller;
+  const LockSettingsPage({super.key, required this.controller});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('应用锁')),
+    body: AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) => ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          SwitchListTile(
+            title: const Text('使用设备身份验证'),
+            subtitle: const Text('使用设备的指纹、人脸或锁屏密码解锁'),
+            value: controller.enabled,
+            onChanged: controller.authenticating
+                ? null
+                : (value) async {
+                    final ok = await controller.setEnabled(value);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('身份验证未通过，设置未更改')),
+                      );
+                    }
+                  },
+          ),
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('应用锁用于限制打开应用，不会加密手机中的账本文件。导出时可选择加密备份。切换到后台会重新锁定。'),
+          ),
+        ],
+      ),
     ),
   );
 }
