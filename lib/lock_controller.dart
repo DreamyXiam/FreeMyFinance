@@ -56,6 +56,8 @@ class LockController extends ChangeNotifier {
     }
   }
 
+  Future<bool> verifyIdentity() => _check();
+
   Future<bool> unlock() async {
     if (!await _check()) return false;
     locked = false;

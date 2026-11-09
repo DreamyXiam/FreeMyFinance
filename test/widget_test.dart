@@ -11,12 +11,14 @@ void main() {
     expect(find.text('还没有账单'), findsOneWidget);
     await tester.tap(find.byTooltip('添加账户'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('储蓄卡'));
+    await tester.pumpAndSettle();
     await tester.enterText(find.widgetWithText(TextFormField, '账户名称'), '我的银行卡');
     await tester.enterText(
       find.widgetWithText(TextFormField, '初始余额（可为负）'),
       '100',
     );
-    await tester.tap(find.text('保存账户'));
+    await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
     expect(find.text('¥ 100.00'), findsOneWidget);
     await tester.tap(find.text('记一笔'));

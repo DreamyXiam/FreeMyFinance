@@ -4,21 +4,25 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'be_ui.dart';
 import 'ledger.dart';
+import 'wallet.dart';
+import 'account_editor.dart';
+import 'card_number_store.dart';
 import 'reports.dart';
 import 'csv_export.dart';
 import 'backup_crypto.dart';
 import 'xlsx_export.dart';
 import 'reminders.dart';
+import 'remote_rates.dart';
 import 'lock_controller.dart';
 
-const navy = Color(0xff142946),
-    teal = Color(0xff007f83),
-    canvas = Color(0xfff2f6f8),
-    ink = Color(0xff172d40);
+const navy = beInk, teal = beBlue, canvas = beBackground, ink = beInk;
 String currencySymbol(String code) => switch (code) {
   'CNY' => '¥',
   'HKD' => 'HK\$',
@@ -103,24 +107,7 @@ class _FinanceAppState extends State<FinanceApp> with WidgetsBindingObserver {
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: teal,
-          primary: teal,
-          surface: Colors.white,
-        ),
-        scaffoldBackgroundColor: canvas,
-        fontFamilyFallback: const ['Microsoft YaHei', 'PingFang SC'],
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: const Color(0xfff2f6f8),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: BorderSide.none,
-          ),
-        ),
-      ),
+      theme: beTheme(),
       home: AnimatedBuilder(
         animation: lock,
         builder: (context, _) {
@@ -489,12 +476,22 @@ class _HomeState extends State<Home> {
   }
 
   Future<void> addAccount([Account? account]) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => AccountForm(ledger: ledger, account: account),
-    );
+    if (account == null) {
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(builder: (_) => AccountTypePicker(ledger: ledger)),
+      );
+    } else {
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => AccountEditorPage(
+            ledger: ledger,
+            kind: account.kind,
+            account: account,
+            authenticate: () => LockScope.of(context).verifyIdentity(),
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> addEntry([Entry? entry]) async {
@@ -540,26 +537,53 @@ class _HomeState extends State<Home> {
     }).toList();
     final now = DateTime.now();
     final total = ledger.accounts
-        .where((a) => a.currency == displayCurrency)
+        .where((a) => a.currency == displayCurrency && a.includeInNetWorth)
         .fold<int>(0, (s, a) => s + ledger.balance(a.id));
     return Scaffold(
       appBar: AppBar(
         backgroundColor: canvas,
-        title: const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
           children: [
-            Text(
-              'FreeMyFinance',
-              style: TextStyle(
-                color: navy,
-                fontWeight: FontWeight.w800,
-                fontSize: 20,
-                letterSpacing: -.5,
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: beBlue,
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: const Icon(
+                Icons.account_balance_wallet_rounded,
+                color: Colors.white,
+                size: 17,
               ),
             ),
-            Text(
-              '让每一笔都有迹可循',
-              style: TextStyle(color: Color(0xff71818e), fontSize: 11),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'FreeMyFinance',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: beInk,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 16,
+                      letterSpacing: -.5,
+                    ),
+                  ),
+                  Text(
+                    '我的财务',
+                    style: TextStyle(
+                      color: beMuted,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -647,103 +671,24 @@ class _HomeState extends State<Home> {
             ListView(
               padding: const EdgeInsets.fromLTRB(20, 10, 20, 100),
               children: [
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    color: navy,
-                    borderRadius: BorderRadius.circular(26),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(
-                            Icons.account_balance_wallet_outlined,
-                            color: Color(0xff91d6d3),
-                            size: 18,
-                          ),
-                          SizedBox(width: 8),
-                          Text(
-                            '账户余额',
-                            style: TextStyle(
-                              color: Color(0xffb8c9d3),
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: DropdownButton<String>(
-                          value: displayCurrency,
-                          dropdownColor: navy,
-                          style: const TextStyle(color: Colors.white),
-                          items: Account.supportedCurrencies
-                              .map(
-                                (v) =>
-                                    DropdownMenuItem(value: v, child: Text(v)),
-                              )
-                              .toList(),
-                          onChanged: (v) =>
-                              setState(() => displayCurrency = v!),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        '${currencySymbol(displayCurrency)} ${money(total)}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 34,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: -1,
-                        ),
-                      ),
-                      if (ledger.accounts.any((a) => a.currency != 'CNY')) ...[
-                        const SizedBox(height: 10),
-                        Text(
-                          ledger.estimatedCnyCents() == null
-                              ? '未设置全部汇率，无法折合人民币'
-                              : '参考折合 ¥ ${money(ledger.estimatedCnyCents()!)} · 手动汇率，非实时',
-                          style: const TextStyle(
-                            color: Color(0xffb8c9d3),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 24),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Summary(
-                              label: '本月收入',
-                              amount: ledger.incomeFor(
-                                now,
-                                currency: displayCurrency,
-                              ),
-                              currency: displayCurrency,
-                            ),
-                          ),
-                          Container(
-                            width: 1,
-                            height: 36,
-                            color: Colors.white24,
-                          ),
-                          const SizedBox(width: 20),
-                          Expanded(
-                            child: Summary(
-                              label: '本月支出',
-                              amount: ledger.expenseFor(
-                                now,
-                                currency: displayCurrency,
-                              ),
-                              currency: displayCurrency,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+                BeBalanceCard(
+                  currency: displayCurrency,
+                  balance: '${currencySymbol(displayCurrency)} ${money(total)}',
+                  income:
+                      '${currencySymbol(displayCurrency)} ${money(ledger.incomeFor(now, currency: displayCurrency))}',
+                  expense:
+                      '${currencySymbol(displayCurrency)} ${money(ledger.expenseFor(now, currency: displayCurrency))}',
+                  currencies: Account.supportedCurrencies,
+                  onCurrencyChanged: (value) =>
+                      setState(() => displayCurrency = value),
+                  estimate:
+                      ledger.accounts.any(
+                        (a) => a.currency != 'CNY' && a.includeInNetWorth,
+                      )
+                      ? (ledger.estimatedCnyCents() == null
+                            ? '未设置全部汇率，无法折合人民币'
+                            : '参考折合 ¥ ${money(ledger.estimatedCnyCents()!)} · ${ledger.rateSource == 'apihz' ? '接口盒子' : '手动汇率'}，非实时')
+                      : null,
                 ),
                 const SizedBox(height: 28),
                 Row(
@@ -861,10 +806,25 @@ class _HomeState extends State<Home> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const PageTitle('账户', '把不同账户放在一起管理'),
-                    IconButton.filledTonal(
-                      onPressed: addAccount,
-                      tooltip: '添加账户',
-                      icon: const Icon(Icons.add),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton.filledTonal(
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => WalletPage(ledger: ledger),
+                            ),
+                          ),
+                          tooltip: '打开卡包',
+                          icon: const Icon(Icons.style_outlined),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton.filledTonal(
+                          onPressed: addAccount,
+                          tooltip: '添加账户',
+                          icon: const Icon(Icons.add),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -883,6 +843,7 @@ class _HomeState extends State<Home> {
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: beBorder),
                       ),
                       child: Row(
                         children: [
@@ -890,7 +851,7 @@ class _HomeState extends State<Home> {
                             width: 48,
                             height: 48,
                             decoration: BoxDecoration(
-                              color: const Color(0xffdef2ef),
+                              color: const Color(0xffeaf4ff),
                               borderRadius: BorderRadius.circular(15),
                             ),
                             child: a.imageUrl.isEmpty
@@ -920,8 +881,8 @@ class _HomeState extends State<Home> {
                                   ),
                                 ),
                                 const SizedBox(height: 4),
-                                const Text(
-                                  '账户余额',
+                                Text(
+                                  Account.kindLabels[a.kind] ?? '账户',
                                   style: TextStyle(
                                     color: Colors.blueGrey,
                                     fontSize: 12,
@@ -965,40 +926,18 @@ class _HomeState extends State<Home> {
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: addEntry,
-        backgroundColor: teal,
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.add),
-        label: const Text('记一笔'),
+      floatingActionButton: BePressFeedback(
+        child: FloatingActionButton.extended(
+          onPressed: addEntry,
+          backgroundColor: teal,
+          foregroundColor: Colors.white,
+          icon: const Icon(Icons.add),
+          label: const Text('记一笔'),
+        ),
       ),
-      bottomNavigationBar: NavigationBar(
+      bottomNavigationBar: BeNavigationBar(
         selectedIndex: tab,
-        onDestinationSelected: (n) => setState(() => tab = n),
-        backgroundColor: Colors.white,
-        indicatorColor: const Color(0xffd8efec),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.space_dashboard_outlined),
-            selectedIcon: Icon(Icons.space_dashboard),
-            label: '概览',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.receipt_long_outlined),
-            selectedIcon: Icon(Icons.receipt_long),
-            label: '账单',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.account_balance_wallet_outlined),
-            selectedIcon: Icon(Icons.account_balance_wallet),
-            label: '账户',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.bar_chart_outlined),
-            selectedIcon: Icon(Icons.bar_chart),
-            label: '统计',
-          ),
-        ],
+        onSelected: (n) => setState(() => tab = n),
       ),
     );
   }
@@ -1043,7 +982,7 @@ class _HomeState extends State<Home> {
     );
     if (yes == true) {
       try {
-        await ledger.deleteAccount(account.id);
+        await AccountWriter(ledger, SecureCardNumberStore()).delete(account);
       } catch (_) {
         if (mounted) {
           ScaffoldMessenger.of(context)
@@ -1185,6 +1124,7 @@ class EntryTile extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: beBorder),
       ),
       child: Material(
         color: Colors.transparent,
@@ -1195,8 +1135,8 @@ class EntryTile extends StatelessWidget {
           ),
           leading: CircleAvatar(
             backgroundColor: entry.income
-                ? const Color(0xffddf3ea)
-                : const Color(0xffe7eef8),
+                ? const Color(0xffe5f6ef)
+                : const Color(0xffeaf4ff),
             child: Icon(
               entry.income ? Icons.south_west : Icons.north_east,
               color: entry.income ? teal : navy,
@@ -1235,157 +1175,6 @@ class EntryTile extends StatelessWidget {
       ),
     );
   }
-}
-
-class AccountForm extends StatefulWidget {
-  final Ledger ledger;
-  final Account? account;
-  const AccountForm({super.key, required this.ledger, this.account});
-  @override
-  State<AccountForm> createState() => _AccountFormState();
-}
-
-class _AccountFormState extends State<AccountForm> {
-  final form = GlobalKey<FormState>();
-  final name = TextEditingController(),
-      opening = TextEditingController(text: '0'),
-      imageUrl = TextEditingController();
-  bool saving = false;
-  String currency = 'CNY';
-  @override
-  void initState() {
-    super.initState();
-    final a = widget.account;
-    if (a != null) {
-      name.text = a.name;
-      opening.text = money(a.openingCents);
-      imageUrl.text = a.imageUrl;
-      currency = a.currency;
-    }
-  }
-
-  @override
-  void dispose() {
-    name.dispose();
-    opening.dispose();
-    imageUrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: EdgeInsets.fromLTRB(
-      22,
-      4,
-      22,
-      MediaQuery.viewInsetsOf(context).bottom + 24,
-    ),
-    child: Form(
-      key: form,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              widget.account == null ? '添加账户' : '编辑账户',
-              style: TextStyle(
-                fontSize: 23,
-                fontWeight: FontWeight.w800,
-                color: ink,
-              ),
-            ),
-            const SizedBox(height: 20),
-            TextFormField(
-              controller: name,
-              maxLength: 30,
-              decoration: const InputDecoration(
-                labelText: '账户名称',
-                hintText: '例如：储蓄卡、现金',
-              ),
-              validator: (v) =>
-                  v == null || v.trim().isEmpty ? '请输入账户名称' : null,
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: currency,
-              decoration: const InputDecoration(labelText: '币种'),
-              items: Account.supportedCurrencies
-                  .map((v) => DropdownMenuItem(value: v, child: Text(v)))
-                  .toList(),
-              onChanged:
-                  widget.account != null &&
-                      widget.ledger.entries.any(
-                        (e) => e.accountId == widget.account!.id,
-                      )
-                  ? null
-                  : (v) => setState(() => currency = v!),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: opening,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-                signed: true,
-              ),
-              decoration: const InputDecoration(labelText: '初始余额（可为负）'),
-              validator: (v) =>
-                  parseSignedAmount(v ?? '') == null ? '请输入有效金额，最多两位小数' : null,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: imageUrl,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(labelText: '卡面图片 HTTPS 地址（选填）'),
-              validator: (v) {
-                final text = (v ?? '').trim();
-                if (text.isEmpty) return null;
-                final uri = Uri.tryParse(text);
-                return uri == null || uri.scheme != 'https' || uri.host.isEmpty
-                    ? '请输入有效的 HTTPS 图片地址'
-                    : null;
-              },
-            ),
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: saving
-                  ? null
-                  : () async {
-                      if (!form.currentState!.validate()) return;
-                      setState(() => saving = true);
-                      try {
-                        final account = Account(
-                          id: widget.account?.id ?? uid(),
-                          name: name.text.trim(),
-                          openingCents: parseSignedAmount(opening.text)!,
-                          imageUrl: imageUrl.text.trim(),
-                          currency: currency,
-                        );
-                        if (widget.account == null) {
-                          await widget.ledger.addAccount(account);
-                        } else {
-                          await widget.ledger.updateAccount(account);
-                        }
-                        if (context.mounted) Navigator.pop(context);
-                      } catch (e) {
-                        if (context.mounted) {
-                          setState(() => saving = false);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('保存失败，请重试')),
-                          );
-                        }
-                      }
-                    },
-              child: const Padding(
-                padding: EdgeInsets.all(14),
-                child: Text('保存账户'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
 }
 
 class EntryForm extends StatefulWidget {
@@ -2655,9 +2444,14 @@ class _RatesPageState extends State<RatesPage> {
   final form = GlobalKey<FormState>();
   late Map<String, TextEditingController> fields;
   bool busy = false;
+  String? fetchedProviderTime;
+  final secureRates = const FlutterSecureStorage();
   @override
   void initState() {
     super.initState();
+    fetchedProviderTime = widget.ledger.rateSource == 'apihz'
+        ? widget.ledger.rateProviderTime
+        : null;
     fields = {
       for (final code in Account.supportedCurrencies.where((c) => c != 'CNY'))
         code: TextEditingController(
@@ -2680,10 +2474,14 @@ class _RatesPageState extends State<RatesPage> {
     if (!form.currentState!.validate()) return;
     setState(() => busy = true);
     try {
-      await widget.ledger.setManualRates({
-        for (final e in fields.entries)
-          if (e.value.text.trim().isNotEmpty) e.key: parseRate(e.value.text)!,
-      });
+      await widget.ledger.setManualRates(
+        {
+          for (final e in fields.entries)
+            if (e.value.text.trim().isNotEmpty) e.key: parseRate(e.value.text)!,
+        },
+        source: fetchedProviderTime == null ? 'manual' : 'apihz',
+        providerTime: fetchedProviderTime,
+      );
       if (mounted) Navigator.pop(context);
     } catch (_) {
       if (mounted) {
@@ -2694,18 +2492,143 @@ class _RatesPageState extends State<RatesPage> {
     }
   }
 
+  Future<void> fetchRates() async {
+    String savedId = '', savedKey = '';
+    try {
+      savedId = await secureRates.read(key: 'apihz_user_id') ?? '';
+      savedKey = await secureRates.read(key: 'apihz_user_key') ?? '';
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('无法读取已保存的接口凭据')));
+      }
+      return;
+    }
+    if (!mounted) return;
+    final id = TextEditingController(text: savedId),
+        key = TextEditingController(text: savedKey);
+    var remember = savedId.isNotEmpty && savedKey.isNotEmpty;
+    final credentials =
+        await showDialog<({String id, String key, bool remember})>(
+          context: context,
+          builder: (ctx) => StatefulBuilder(
+            builder: (ctx, setDialog) => AlertDialog(
+              title: const Text('获取每日汇率'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('使用接口盒子的个人 ID 和密钥，仅请求各币种兑换 1 元的参考汇率。'),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: id,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: '用户 ID'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: key,
+                      obscureText: true,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: const InputDecoration(labelText: '通讯密钥'),
+                    ),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: remember,
+                      onChanged: (v) => setDialog(() => remember = v ?? false),
+                      title: const Text('在本机安全保存凭据'),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, (
+                    id: id.text.trim(),
+                    key: key.text,
+                    remember: remember,
+                  )),
+                  child: const Text('获取'),
+                ),
+              ],
+            ),
+          ),
+        );
+    id.dispose();
+    key.dispose();
+    if (credentials == null || !mounted) return;
+    setState(() => busy = true);
+    final client = http.Client();
+    try {
+      final result = await RemoteRateClient(client)
+          .fetch(credentials.id, credentials.key);
+      try {
+        if (credentials.remember) {
+          await secureRates.write(key: 'apihz_user_id', value: credentials.id);
+          await secureRates.write(
+            key: 'apihz_user_key',
+            value: credentials.key,
+          );
+        } else {
+          await secureRates.delete(key: 'apihz_user_id');
+          await secureRates.delete(key: 'apihz_user_key');
+        }
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('汇率已获取，但凭据设置未保存')));
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        for (final e in result.rates.entries) {
+          fields[e.key]?.text = (e.value / 1000000).toStringAsFixed(6);
+        }
+        fetchedProviderTime = result.providerTime;
+        busy = false;
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('汇率已获取，请核对后保存')));
+    } catch (_) {
+      if (mounted) {
+        setState(() => busy = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('获取汇率失败，请检查凭据或网络；原汇率未改变')));
+      }
+    } finally {
+      client.close();
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('手动汇率')),
+    appBar: AppBar(title: const Text('汇率设置')),
     body: Form(
       key: form,
       child: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const Text('输入 1 单位外币折合多少人民币。汇率仅供参考，不会自动更新；留空表示未设置。'),
+          const Text('输入 1 单位外币折合多少人民币。汇率仅供参考，留空表示未设置。'),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: busy ? null : fetchRates,
+            icon: const Icon(Icons.refresh),
+            label: const Text('从接口盒子获取每日汇率'),
+          ),
+          if (fetchedProviderTime != null)
+            Text(
+              '来源：接口盒子 · 数据时间：$fetchedProviderTime',
+              style: const TextStyle(color: beMuted, fontSize: 12),
+            ),
           if (widget.ledger.ratesUpdatedAt != null)
             Text(
-              '上次手动更新：${widget.ledger.ratesUpdatedAt!.year}-${widget.ledger.ratesUpdatedAt!.month.toString().padLeft(2, '0')}-${widget.ledger.ratesUpdatedAt!.day.toString().padLeft(2, '0')}',
+              '上次保存：${widget.ledger.ratesUpdatedAt!.year}-${widget.ledger.ratesUpdatedAt!.month.toString().padLeft(2, '0')}-${widget.ledger.ratesUpdatedAt!.day.toString().padLeft(2, '0')}',
             ),
           const SizedBox(height: 16),
           ...fields.entries.map(
@@ -2713,6 +2636,11 @@ class _RatesPageState extends State<RatesPage> {
               padding: const EdgeInsets.only(bottom: 12),
               child: TextFormField(
                 controller: e.value,
+                onChanged: (_) {
+                  if (fetchedProviderTime != null) {
+                    setState(() => fetchedProviderTime = null);
+                  }
+                },
                 keyboardType: const TextInputType.numberWithOptions(
                   decimal: true,
                 ),

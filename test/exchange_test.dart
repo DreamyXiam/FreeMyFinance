@@ -19,6 +19,21 @@ void main() {
     await copy.setManualRates({});
     await copy.restoreBackup(backup);
     expect(copy.manualRates['HKD'], 900000);
+    await copy.setManualRates(
+      {'HKD': 852143},
+      source: 'apihz',
+      providerTime: '2026-11-05 08:00:01',
+    );
+    final fetched = await Ledger.load();
+    expect(fetched.rateSource, 'apihz');
+    expect(fetched.rateProviderTime, '2026-11-05 08:00:01');
+    final remoteBackup = fetched.exportBackup();
+    await fetched.setManualRates({});
+    await fetched.restoreBackup(remoteBackup);
+    expect(fetched.rateProviderTime, '2026-11-05 08:00:01');
+    await fetched.setManualRates({'HKD': 900000});
+    expect(fetched.rateSource, 'manual');
+    expect(fetched.rateProviderTime, isNull);
     await expectLater(copy.setManualRates({'XYZ': 100}), throwsStateError);
   });
 }

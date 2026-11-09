@@ -7,14 +7,49 @@ import 'ledger_store.dart';
 
 class Account {
   static const supportedCurrencies = ['CNY', 'HKD', 'USD', 'EUR', 'GBP'];
-  final String id, name, imageUrl, currency;
+  static const kindLabels = {
+    'cash': '现金',
+    'debit': '储蓄卡',
+    'credit': '信用卡',
+    'stock': '股票',
+    'fund': '基金',
+    'metals': '贵金属',
+    'crypto': '加密货币',
+    'virtual': '虚拟账户',
+    'liability': '负债',
+    'receivable': '应收账款',
+    'other': '其他',
+  };
+  final String id,
+      name,
+      imageUrl,
+      currency,
+      kind,
+      lastFour,
+      note,
+      instrument,
+      expiry;
+  final bool includeInNetWorth, showNoteOnCard;
+  final String cardRef;
   final int openingCents;
+  final int? creditLimitCents, statementDay, paymentDay;
   Account({
     required this.id,
     required this.name,
     required this.openingCents,
     this.imageUrl = '',
     this.currency = 'CNY',
+    this.kind = 'other',
+    this.lastFour = '',
+    this.note = '',
+    this.instrument = '',
+    this.expiry = '',
+    this.cardRef = '',
+    this.includeInNetWorth = true,
+    this.showNoteOnCard = false,
+    this.creditLimitCents,
+    this.statementDay,
+    this.paymentDay,
   });
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -22,6 +57,17 @@ class Account {
     'openingCents': openingCents,
     'imageUrl': imageUrl,
     'currency': currency,
+    'kind': kind,
+    'lastFour': lastFour,
+    'note': note,
+    'instrument': instrument,
+    'expiry': expiry,
+    'cardRef': cardRef,
+    'includeInNetWorth': includeInNetWorth,
+    'showNoteOnCard': showNoteOnCard,
+    'creditLimitCents': creditLimitCents,
+    'statementDay': statementDay,
+    'paymentDay': paymentDay,
   };
   factory Account.fromJson(Map<String, dynamic> j) => Account(
     id: j['id'],
@@ -29,6 +75,17 @@ class Account {
     openingCents: j['openingCents'],
     imageUrl: j['imageUrl'] ?? '',
     currency: j['currency'] ?? 'CNY',
+    kind: j['kind'] ?? 'other',
+    lastFour: j['lastFour'] ?? '',
+    note: j['note'] ?? '',
+    instrument: j['instrument'] ?? '',
+    expiry: j['expiry'] ?? '',
+    cardRef: j['cardRef'] ?? '',
+    includeInNetWorth: j['includeInNetWorth'] ?? true,
+    showNoteOnCard: j['showNoteOnCard'] ?? false,
+    creditLimitCents: j['creditLimitCents'],
+    statementDay: j['statementDay'],
+    paymentDay: j['paymentDay'],
   );
 }
 
@@ -129,6 +186,8 @@ class Ledger extends ChangeNotifier {
   final List<Recurring> recurring;
   final Map<String, int> manualRates;
   DateTime? ratesUpdatedAt;
+  String rateSource;
+  String? rateProviderTime;
   bool _saving = false;
   Ledger._(
     this._store,
@@ -138,6 +197,8 @@ class Ledger extends ChangeNotifier {
     List<Recurring>? rules,
     Map<String, int>? rates,
     this.ratesUpdatedAt,
+    this.rateSource = 'manual',
+    this.rateProviderTime,
   ]) : recurring = rules ?? [],
        manualRates = rates ?? {};
   static Future<Ledger> load({KeyVault? vault}) async {
@@ -156,6 +217,8 @@ class Ledger extends ChangeNotifier {
           .toList(),
       Map<String, int>.from(j['manualRates'] ?? {}),
       j['ratesUpdatedAt'] == null ? null : DateTime.parse(j['ratesUpdatedAt']),
+      j['rateSource'] ?? 'manual',
+      j['rateProviderTime'],
     );
   }
 
@@ -166,6 +229,8 @@ class Ledger extends ChangeNotifier {
     List<Recurring>? rules,
     Map<String, int>? rates,
     DateTime? ratesDate,
+    String? nextRateSource,
+    String? nextProviderTime,
   }) async {
     if (_saving) throw StateError('已有操作正在保存，请重试');
     _saving = true;
@@ -177,6 +242,12 @@ class Ledger extends ChangeNotifier {
           'monthlyBudgetCents': budget ?? monthlyBudgetCents,
           'recurring': (rules ?? recurring).map((r) => r.toJson()).toList(),
           'manualRates': rates ?? manualRates,
+          'rateSource': rates == null
+              ? rateSource
+              : (nextRateSource ?? 'manual'),
+          'rateProviderTime': rates == null
+              ? rateProviderTime
+              : nextProviderTime,
           'ratesUpdatedAt': (rates == null ? ratesUpdatedAt : ratesDate)
               ?.toIso8601String(),
         }),
@@ -187,6 +258,8 @@ class Ledger extends ChangeNotifier {
           ..clear()
           ..addAll(rates);
         ratesUpdatedAt = ratesDate;
+        rateSource = nextRateSource ?? 'manual';
+        rateProviderTime = nextProviderTime;
       }
       if (rules != null) {
         recurring
@@ -216,6 +289,8 @@ class Ledger extends ChangeNotifier {
         'monthlyBudgetCents': monthlyBudgetCents,
         'recurring': recurring.map((r) => r.toJson()).toList(),
         'manualRates': manualRates,
+        'rateSource': rateSource,
+        'rateProviderTime': rateProviderTime,
         'ratesUpdatedAt': ratesUpdatedAt?.toIso8601String(),
       });
       await _store.enable(raw);
@@ -227,8 +302,10 @@ class Ledger extends ChangeNotifier {
 
   String exportBackup() => jsonEncode({
     'format': 'FreeMyFinance',
-    'version': 6,
+    'version': 9,
     'manualRates': manualRates,
+    'rateSource': rateSource,
+    'rateProviderTime': rateProviderTime,
     'ratesUpdatedAt': ratesUpdatedAt?.toIso8601String(),
     'monthlyBudgetCents': monthlyBudgetCents,
     'recurring': recurring.map((r) => r.toJson()).toList(),
@@ -246,7 +323,10 @@ class Ledger extends ChangeNotifier {
               data['version'] != 3 &&
               data['version'] != 4 &&
               data['version'] != 5 &&
-              data['version'] != 6) ||
+              data['version'] != 6 &&
+              data['version'] != 7 &&
+              data['version'] != 8 &&
+              data['version'] != 9) ||
           data['accounts'] is! List ||
           data['entries'] is! List) {
         throw const FormatException('无效的备份格式');
@@ -264,6 +344,16 @@ class Ledger extends ChangeNotifier {
           throw const FormatException('汇率数据无效');
         }
         rates[e.key] = e.value;
+      }
+      final source = data['rateSource'] ?? 'manual';
+      final providerTime = data['rateProviderTime'];
+      if ((source != 'manual' && source != 'apihz') ||
+          (providerTime != null &&
+              (providerTime is! String ||
+                  !RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')
+                      .hasMatch(providerTime))) ||
+          (source == 'apihz' && providerTime == null)) {
+        throw const FormatException('汇率来源无效');
       }
       final rawDate = data['ratesUpdatedAt'];
       if (rawDate != null && rawDate is! String) {
@@ -285,7 +375,40 @@ class Ledger extends ChangeNotifier {
             item['openingCents'] is! int ||
             (item['imageUrl'] != null && item['imageUrl'] is! String) ||
             (item['currency'] != null &&
-                !Account.supportedCurrencies.contains(item['currency']))) {
+                !Account.supportedCurrencies.contains(item['currency'])) ||
+            (item['kind'] != null &&
+                !Account.kindLabels.containsKey(item['kind'])) ||
+            (item['lastFour'] != null &&
+                (item['lastFour'] is! String ||
+                    ((item['lastFour'] as String).isNotEmpty &&
+                        !RegExp(r'^\d{4}$').hasMatch(item['lastFour'])))) ||
+            (item['note'] != null && item['note'] is! String) ||
+            (item['cardRef'] != null &&
+                (item['cardRef'] is! String ||
+                    ((item['cardRef'] as String).isNotEmpty &&
+                        !RegExp(r'^[a-f0-9]{32}$')
+                            .hasMatch(item['cardRef'])))) ||
+            (item['instrument'] != null && item['instrument'] is! String) ||
+            (item['expiry'] != null &&
+                (item['expiry'] is! String ||
+                    ((item['expiry'] as String).isNotEmpty &&
+                        !RegExp(r'^(0[1-9]|1[0-2])/\d{4}$')
+                            .hasMatch(item['expiry'])))) ||
+            (item['includeInNetWorth'] != null &&
+                item['includeInNetWorth'] is! bool) ||
+            (item['showNoteOnCard'] != null &&
+                item['showNoteOnCard'] is! bool) ||
+            (item['creditLimitCents'] != null &&
+                (item['creditLimitCents'] is! int ||
+                    (item['creditLimitCents'] as int) < 0)) ||
+            (item['statementDay'] != null &&
+                (item['statementDay'] is! int ||
+                    (item['statementDay'] as int) < 1 ||
+                    (item['statementDay'] as int) > 31)) ||
+            (item['paymentDay'] != null &&
+                (item['paymentDay'] is! int ||
+                    (item['paymentDay'] as int) < 1 ||
+                    (item['paymentDay'] as int) > 31))) {
           throw const FormatException('账户数据无效');
         }
         final a = Account.fromJson(item);
@@ -374,6 +497,8 @@ class Ledger extends ChangeNotifier {
         rules: newRules,
         rates: rates,
         ratesDate: ratesDate,
+        nextRateSource: source,
+        nextProviderTime: providerTime,
       );
     } on FormatException {
       rethrow;
@@ -382,7 +507,18 @@ class Ledger extends ChangeNotifier {
     }
   }
 
-  Future<void> setManualRates(Map<String, int> rates) async {
+  Future<void> setManualRates(
+    Map<String, int> rates, {
+    String source = 'manual',
+    String? providerTime,
+  }) async {
+    if ((source != 'manual' && source != 'apihz') ||
+        (source == 'apihz' &&
+            (providerTime == null ||
+                !RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')
+                    .hasMatch(providerTime)))) {
+      throw StateError('汇率来源无效');
+    }
     for (final e in rates.entries) {
       if (e.key == 'CNY' ||
           !Account.supportedCurrencies.contains(e.key) ||
@@ -396,12 +532,14 @@ class Ledger extends ChangeNotifier {
       [...entries],
       rates: Map.of(rates),
       ratesDate: DateTime.now(),
+      nextRateSource: source,
+      nextProviderTime: source == 'apihz' ? providerTime : null,
     );
   }
 
   int? estimatedCnyCents() {
     var total = BigInt.zero;
-    for (final a in accounts) {
+    for (final a in accounts.where((a) => a.includeInNetWorth)) {
       final rate = a.currency == 'CNY' ? 1000000 : manualRates[a.currency];
       if (rate == null) return null;
       final n = BigInt.from(balance(a.id)) * BigInt.from(rate);
@@ -517,7 +655,24 @@ class Ledger extends ChangeNotifier {
     return count;
   }
 
+  void _validateAccount(Account a) {
+    if (!Account.kindLabels.containsKey(a.kind) ||
+        !Account.supportedCurrencies.contains(a.currency) ||
+        (a.lastFour.isNotEmpty && !RegExp(r'^\d{4}$').hasMatch(a.lastFour)) ||
+        (a.cardRef.isNotEmpty &&
+            !RegExp(r'^[a-f0-9]{32}$').hasMatch(a.cardRef)) ||
+        (a.expiry.isNotEmpty &&
+            !RegExp(r'^(0[1-9]|1[0-2])/\d{4}$').hasMatch(a.expiry)) ||
+        (a.creditLimitCents != null && a.creditLimitCents! < 0) ||
+        (a.statementDay != null &&
+            (a.statementDay! < 1 || a.statementDay! > 31)) ||
+        (a.paymentDay != null && (a.paymentDay! < 1 || a.paymentDay! > 31))) {
+      throw StateError('账户信息无效');
+    }
+  }
+
   Future<void> addAccount(Account a) async {
+    _validateAccount(a);
     if (accounts.any((x) => x.id == a.id) ||
         !Account.supportedCurrencies.contains(a.currency)) {
       throw StateError('账户无效');
@@ -526,6 +681,7 @@ class Ledger extends ChangeNotifier {
   }
 
   Future<void> updateAccount(Account a) async {
+    _validateAccount(a);
     if (!accounts.any((x) => x.id == a.id)) throw StateError('账户不存在');
     if (!Account.supportedCurrencies.contains(a.currency) ||
         (accounts.firstWhere((x) => x.id == a.id).currency != a.currency &&
