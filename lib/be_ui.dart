@@ -168,14 +168,23 @@ class BeNavigationBar extends StatelessWidget {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(
-                                icons[i],
-                                size: 21,
-                                color: i == selectedIndex ? beBlue : beMuted,
+                              AnimatedScale(
+                                scale: i == selectedIndex ? 1.08 : 1,
+                                duration: reduce
+                                    ? Duration.zero
+                                    : const Duration(milliseconds: 220),
+                                curve: Curves.easeOutCubic,
+                                child: Icon(
+                                  icons[i],
+                                  size: 21,
+                                  color: i == selectedIndex ? beBlue : beMuted,
+                                ),
                               ),
                               const SizedBox(height: 3),
-                              Text(
-                                labels[i],
+                              AnimatedDefaultTextStyle(
+                                duration: reduce
+                                    ? Duration.zero
+                                    : const Duration(milliseconds: 220),
                                 style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: i == selectedIndex
@@ -183,6 +192,7 @@ class BeNavigationBar extends StatelessWidget {
                                       : FontWeight.w500,
                                   color: i == selectedIndex ? beBlue : beMuted,
                                 ),
+                                child: Text(labels[i]),
                               ),
                             ],
                           ),

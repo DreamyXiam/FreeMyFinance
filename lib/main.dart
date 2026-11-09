@@ -10,6 +10,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'be_ui.dart';
+import 'be_tools_menu.dart';
 import 'ledger.dart';
 import 'wallet.dart';
 import 'account_editor.dart';
@@ -475,6 +476,47 @@ class _HomeState extends State<Home> {
     }
   }
 
+  void _handleToolAction(String value) {
+    if (value == 'export') {
+      exportBackup();
+    } else if (value == 'encrypted') {
+      exportEncryptedBackup();
+    } else if (value == 'rates') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => RatesPage(ledger: ledger)),
+      );
+    } else if (value == 'storage-security') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => StorageSecurityPage(ledger: ledger),
+        ),
+      );
+    } else if (value == 'lock') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => LockSettingsPage(controller: LockScope.of(context)),
+        ),
+      );
+    } else if (value == 'reminders') {
+      Navigator.of(context)
+          .push(MaterialPageRoute<void>(builder: (_) => const ReminderPage()));
+    } else if (value == 'categories') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => CategoriesPage(ledger: ledger)),
+      );
+    } else if (value == 'recurring') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => RecurringPage(ledger: ledger)),
+      );
+    } else if (value == 'xlsx') {
+      exportExcel();
+    } else if (value == 'csv') {
+      exportTransactions();
+    } else {
+      importBackup();
+    }
+  }
+
   Future<void> addAccount([Account? account]) async {
     if (account == null) {
       await Navigator.of(context).push<bool>(
@@ -588,69 +630,15 @@ class _HomeState extends State<Home> {
           ],
         ),
         actions: [
-          PopupMenuButton<String>(
-            tooltip: '备份与恢复',
-            onSelected: (value) {
-              if (value == 'export') {
-                exportBackup();
-              } else if (value == 'encrypted') {
-                exportEncryptedBackup();
-              } else if (value == 'rates') {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => RatesPage(ledger: ledger),
-                  ),
-                );
-              } else if (value == 'storage-security') {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => StorageSecurityPage(ledger: ledger),
-                  ),
-                );
-              } else if (value == 'lock') {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        LockSettingsPage(controller: LockScope.of(context)),
-                  ),
-                );
-              } else if (value == 'reminders') {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(builder: (_) => const ReminderPage()),
-                );
-              } else if (value == 'categories') {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => CategoriesPage(ledger: ledger),
-                  ),
-                );
-              } else if (value == 'recurring') {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => RecurringPage(ledger: ledger),
-                  ),
-                );
-              } else if (value == 'xlsx') {
-                exportExcel();
-              } else if (value == 'csv') {
-                exportTransactions();
-              } else {
-                importBackup();
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'encrypted', child: Text('导出加密备份')),
-              PopupMenuItem(value: 'export', child: Text('导出未加密备份')),
-              PopupMenuItem(value: 'import', child: Text('恢复备份')),
-              PopupMenuItem(value: 'csv', child: Text('导出账单 CSV')),
-              PopupMenuItem(value: 'xlsx', child: Text('导出账单 Excel')),
-              PopupMenuItem(value: 'recurring', child: Text('周期账单')),
-              PopupMenuItem(value: 'categories', child: Text('分类管理')),
-              PopupMenuItem(value: 'reminders', child: Text('记账提醒')),
-              PopupMenuItem(value: 'lock', child: Text('应用锁')),
-              PopupMenuItem(value: 'storage-security', child: Text('本地账本加密')),
-              PopupMenuItem(value: 'rates', child: Text('手动汇率')),
-            ],
+          BePressFeedback(
+            child: IconButton(
+              tooltip: '备份与恢复',
+              icon: const Icon(Icons.more_horiz_rounded),
+              onPressed: () async {
+                final value = await showBeToolsMenu(context);
+                if (value != null && mounted) _handleToolAction(value);
+              },
+            ),
           ),
           IconButton(
             onPressed: addTransfer,
