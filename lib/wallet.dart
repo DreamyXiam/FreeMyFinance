@@ -49,6 +49,7 @@ class _WalletPageState extends State<WalletPage>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   Animation<double>? _animation;
+  final Map<String, Widget> _cardCache = {};
   double _position = 0;
   String _currency = '全部';
   bool _sortByName = false;
@@ -66,10 +67,15 @@ class _WalletPageState extends State<WalletPage>
     _controller =
         AnimationController(
           vsync: this,
-          duration: const Duration(milliseconds: 280),
+          duration: const Duration(milliseconds: 420),
         )..addListener(() {
           if (_animation != null && mounted) {
-            setState(() => _position = _animation!.value);
+            setState(
+              () => _position = _animation!.value.clamp(
+                0.0,
+                math.max(0, _items.length - 1).toDouble(),
+              ),
+            );
           }
         });
     widget.ledger.addListener(_refresh);
@@ -85,11 +91,22 @@ class _WalletPageState extends State<WalletPage>
   void _refresh() {
     if (mounted) {
       setState(() {
+        _cardCache.clear();
         final n = _items.length;
         _position = n == 0 ? 0 : _position.clamp(0.0, (n - 1).toDouble());
       });
     }
   }
+
+  Widget _cachedCard(Account account) => _cardCache.putIfAbsent(
+    account.id,
+    () => RepaintBoundary(
+      child: WalletCard(
+        account: account,
+        balance: widget.ledger.balance(account.id),
+      ),
+    ),
+  );
 
   void _goTo(int value) {
     final items = _items;
@@ -103,7 +120,7 @@ class _WalletPageState extends State<WalletPage>
     _animation = Tween<double>(
       begin: _position,
       end: index.toDouble(),
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
     _controller.forward(from: 0);
   }
 
@@ -178,6 +195,7 @@ class _WalletPageState extends State<WalletPage>
             icon: const Icon(Icons.swap_vert),
             initialValue: _sortByName,
             onSelected: (v) => setState(() {
+              _controller.stop();
               _sortByName = v;
               _position = 0;
             }),
@@ -191,6 +209,7 @@ class _WalletPageState extends State<WalletPage>
             icon: const Icon(Icons.filter_list),
             initialValue: _currency,
             onSelected: (v) => setState(() {
+              _controller.stop();
               _currency = v;
               _position = 0;
             }),
@@ -291,6 +310,7 @@ class _WalletPageState extends State<WalletPage>
                                 (_position - (d.primaryDelta ?? 0) / step)
                                     .clamp(0.0, (items.length - 1).toDouble()),
                           ),
+                          onVerticalDragCancel: () => _goTo(_position.round()),
                           onVerticalDragEnd: (d) {
                             final velocity = d.primaryVelocity ?? 0;
                             _goTo((_position - velocity / (step * 5)).round());
@@ -317,21 +337,29 @@ class _WalletPageState extends State<WalletPage>
                             children: [
                               for (final i in visible)
                                 Positioned(
+                                  key: ValueKey('wallet-card-$i'),
                                   left: (constraints.maxWidth - width) / 2,
                                   top: anchor + (i - _position) * step,
                                   width: width,
                                   height: height,
-                                  child: Transform.scale(
-                                    scale:
-                                        1 -
-                                        math.min(
-                                          (i - _position).abs() * .025,
-                                          .1,
-                                        ),
-                                    child: WalletCard(
-                                      account: items[i],
-                                      balance: widget.ledger.balance(
-                                        items[i].id,
+                                  child: Transform.translate(
+                                    offset: Offset(
+                                      ((i - _position) * 3).clamp(-12.0, 12.0),
+                                      0,
+                                    ),
+                                    child: Transform.rotate(
+                                      angle: ((i - _position) * .012).clamp(
+                                        -.04,
+                                        .04,
+                                      ),
+                                      child: Transform.scale(
+                                        scale:
+                                            1 -
+                                            math.min(
+                                              (i - _position).abs() * .04,
+                                              .14,
+                                            ),
+                                        child: _cachedCard(items[i]),
                                       ),
                                     ),
                                   ),
