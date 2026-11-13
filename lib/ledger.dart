@@ -179,11 +179,44 @@ class Recurring {
 }
 
 class Ledger extends ChangeNotifier {
+  static const defaultExpenseCategories = [
+    '餐饮',
+    '购物',
+    '交通',
+    '住房',
+    '娱乐',
+    '医疗',
+    '其他支出',
+  ];
+  static const defaultIncomeCategories = ['工资', '奖金', '转入', '其他收入'];
+  static List<String> _categoryList(dynamic raw, List<String> defaults) {
+    if (raw == null) return [...defaults];
+    if (raw is! List ||
+        raw.any((v) => v is! String || v.trim().isEmpty || v.length > 30)) {
+      throw const FormatException('分类数据无效');
+    }
+    return (raw.cast<String>().toSet()).toList();
+  }
+
+  static List<String> _mergeCategories(
+    List<String> catalog,
+    List<Entry> entries,
+    List<Recurring> rules,
+    bool income,
+  ) => {
+    ...catalog,
+    ...entries
+        .where((e) => e.transferId.isEmpty && e.income == income)
+        .map((e) => e.category),
+    ...rules.where((r) => r.income == income).map((r) => r.category),
+  }.toList();
   final LedgerStore _store;
   final List<Account> accounts;
   final List<Entry> entries;
   int monthlyBudgetCents;
   final List<Recurring> recurring;
+  final List<String> expenseCategories;
+  final List<String> incomeCategories;
   final Map<String, int> manualRates;
   DateTime? ratesUpdatedAt;
   String rateSource;
@@ -199,7 +232,21 @@ class Ledger extends ChangeNotifier {
     this.ratesUpdatedAt,
     this.rateSource = 'manual',
     this.rateProviderTime,
+    List<String>? expenses,
+    List<String>? incomes,
   ]) : recurring = rules ?? [],
+       expenseCategories = _mergeCategories(
+         expenses ?? defaultExpenseCategories,
+         entries,
+         rules ?? [],
+         false,
+       ),
+       incomeCategories = _mergeCategories(
+         incomes ?? defaultIncomeCategories,
+         entries,
+         rules ?? [],
+         true,
+       ),
        manualRates = rates ?? {};
   static Future<Ledger> load({KeyVault? vault}) async {
     final p = await SharedPreferences.getInstance();
@@ -219,6 +266,8 @@ class Ledger extends ChangeNotifier {
       j['ratesUpdatedAt'] == null ? null : DateTime.parse(j['ratesUpdatedAt']),
       j['rateSource'] ?? 'manual',
       j['rateProviderTime'],
+      _categoryList(j['expenseCategories'], defaultExpenseCategories),
+      _categoryList(j['incomeCategories'], defaultIncomeCategories),
     );
   }
 
@@ -231,14 +280,30 @@ class Ledger extends ChangeNotifier {
     DateTime? ratesDate,
     String? nextRateSource,
     String? nextProviderTime,
+    List<String>? expenses,
+    List<String>? incomes,
   }) async {
     if (_saving) throw StateError('已有操作正在保存，请重试');
     _saving = true;
     try {
+      final nextExpenses = _mergeCategories(
+        expenses ?? expenseCategories,
+        nextEntries,
+        rules ?? recurring,
+        false,
+      );
+      final nextIncomes = _mergeCategories(
+        incomes ?? incomeCategories,
+        nextEntries,
+        rules ?? recurring,
+        true,
+      );
       await _store.write(
         jsonEncode({
           'accounts': nextAccounts.map((a) => a.toJson()).toList(),
           'entries': nextEntries.map((e) => e.toJson()).toList(),
+          'expenseCategories': nextExpenses,
+          'incomeCategories': nextIncomes,
           'monthlyBudgetCents': budget ?? monthlyBudgetCents,
           'recurring': (rules ?? recurring).map((r) => r.toJson()).toList(),
           'manualRates': rates ?? manualRates,
@@ -253,6 +318,12 @@ class Ledger extends ChangeNotifier {
         }),
       );
       monthlyBudgetCents = budget ?? monthlyBudgetCents;
+      expenseCategories
+        ..clear()
+        ..addAll(nextExpenses);
+      incomeCategories
+        ..clear()
+        ..addAll(nextIncomes);
       if (rates != null) {
         manualRates
           ..clear()
@@ -286,6 +357,8 @@ class Ledger extends ChangeNotifier {
       final raw = jsonEncode({
         'accounts': accounts.map((a) => a.toJson()).toList(),
         'entries': entries.map((e) => e.toJson()).toList(),
+        'expenseCategories': expenseCategories,
+        'incomeCategories': incomeCategories,
         'monthlyBudgetCents': monthlyBudgetCents,
         'recurring': recurring.map((r) => r.toJson()).toList(),
         'manualRates': manualRates,
@@ -302,7 +375,9 @@ class Ledger extends ChangeNotifier {
 
   String exportBackup() => jsonEncode({
     'format': 'FreeMyFinance',
-    'version': 9,
+    'version': 10,
+    'expenseCategories': expenseCategories,
+    'incomeCategories': incomeCategories,
     'manualRates': manualRates,
     'rateSource': rateSource,
     'rateProviderTime': rateProviderTime,
@@ -326,7 +401,8 @@ class Ledger extends ChangeNotifier {
               data['version'] != 6 &&
               data['version'] != 7 &&
               data['version'] != 8 &&
-              data['version'] != 9) ||
+              data['version'] != 9 &&
+              data['version'] != 10) ||
           data['accounts'] is! List ||
           data['entries'] is! List) {
         throw const FormatException('无效的备份格式');
@@ -490,6 +566,14 @@ class Ledger extends ChangeNotifier {
           throw const FormatException('转账数据无效');
         }
       }
+      final newExpenses = _categoryList(
+        data['expenseCategories'],
+        defaultExpenseCategories,
+      );
+      final newIncomes = _categoryList(
+        data['incomeCategories'],
+        defaultIncomeCategories,
+      );
       await _commit(
         newAccounts,
         newEntries,
@@ -499,6 +583,8 @@ class Ledger extends ChangeNotifier {
         ratesDate: ratesDate,
         nextRateSource: source,
         nextProviderTime: providerTime,
+        expenses: newExpenses,
+        incomes: newIncomes,
       );
     } on FormatException {
       rethrow;
@@ -555,14 +641,37 @@ class Ledger extends ChangeNotifier {
     await _commit([...accounts], [...entries], budget: cents);
   }
 
-  Future<void> renameCategory(String oldName, String newName) async {
+  List<String> categoriesFor(bool income) =>
+      List.unmodifiable(income ? incomeCategories : expenseCategories);
+
+  Future<void> addCategory(String value, {required bool income}) async {
+    final name = value.trim();
+    if (name.isEmpty || name.length > 30) throw StateError('分类名称无效');
+    final existing = income ? incomeCategories : expenseCategories;
+    if (existing.contains(name)) throw StateError('分类已存在');
+    await _commit(
+      [...accounts],
+      [...entries],
+      expenses: income ? null : [...expenseCategories, name],
+      incomes: income ? [...incomeCategories, name] : null,
+    );
+  }
+
+  Future<void> renameCategory(
+    String oldName,
+    String newName, {
+    bool? income,
+  }) async {
     final name = newName.trim();
     if (oldName.trim().isEmpty || name.isEmpty || name.length > 30) {
       throw StateError('分类名称无效');
     }
     final updatedEntries = entries
         .map(
-          (e) => e.transferId.isEmpty && e.category == oldName
+          (e) =>
+              e.transferId.isEmpty &&
+                  e.category == oldName &&
+                  (income == null || e.income == income)
               ? Entry(
                   id: e.id,
                   accountId: e.accountId,
@@ -577,7 +686,7 @@ class Ledger extends ChangeNotifier {
         .toList();
     final updatedRules = recurring
         .map(
-          (r) => r.category == oldName
+          (r) => r.category == oldName && (income == null || r.income == income)
               ? Recurring(
                   id: r.id,
                   accountId: r.accountId,
@@ -591,7 +700,23 @@ class Ledger extends ChangeNotifier {
               : r,
         )
         .toList();
-    await _commit([...accounts], updatedEntries, rules: updatedRules);
+    await _commit(
+      [...accounts],
+      updatedEntries,
+      rules: updatedRules,
+      expenses: (income == null || !income)
+          ? [
+              for (final v in expenseCategories)
+                if (v == oldName) name else v,
+            ]
+          : null,
+      incomes: (income == null || income)
+          ? [
+              for (final v in incomeCategories)
+                if (v == oldName) name else v,
+            ]
+          : null,
+    );
   }
 
   Future<void> addRecurring(Recurring rule) async {

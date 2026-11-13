@@ -31,6 +31,12 @@ void main() {
       );
       await t.pumpWidget(const FinanceApp());
       await t.pumpAndSettle();
+      await t.scrollUntilVisible(
+        find.text('餐饮'),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await t.pumpAndSettle();
       await t.tap(find.text('餐饮').first);
       await t.pumpAndSettle();
       expect(find.text('编辑账单'), findsOneWidget);

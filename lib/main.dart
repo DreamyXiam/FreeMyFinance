@@ -21,6 +21,8 @@ import 'backup_crypto.dart';
 import 'xlsx_export.dart';
 import 'reminders.dart';
 import 'remote_rates.dart';
+import 'monthly_overview.dart';
+import 'ai_analysis_panel.dart';
 import 'lock_controller.dart';
 
 const navy = beInk, teal = beBlue, canvas = beBackground, ink = beInk;
@@ -219,7 +221,10 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   int tab = 0;
-  String search = '', accountFilter = '', displayCurrency = 'CNY';
+  String search = '',
+      accountFilter = '',
+      categoryFilter = '',
+      displayCurrency = 'CNY';
   DateTime? monthFilter;
   Ledger get ledger => widget.ledger;
   @override
@@ -562,6 +567,13 @@ class _HomeState extends State<Home> {
   Widget build(BuildContext context) {
     final entries = [...ledger.entries]
       ..sort((a, b) => b.date.compareTo(a.date));
+    final categoryValues = [
+      ...ledger.categoriesFor(false).map((v) => '0:$v'),
+      ...ledger.categoriesFor(true).map((v) => '1:$v'),
+    ];
+    final effectiveCategoryFilter = categoryValues.contains(categoryFilter)
+        ? categoryFilter
+        : '';
     final filteredEntries = entries.where((e) {
       final accountName = ledger.accounts
           .where((a) => a.id == e.accountId)
@@ -569,6 +581,8 @@ class _HomeState extends State<Home> {
           .join();
       final term = search.trim().toLowerCase();
       return (accountFilter.isEmpty || e.accountId == accountFilter) &&
+          (effectiveCategoryFilter.isEmpty ||
+              '${e.income ? 1 : 0}:${e.category}' == effectiveCategoryFilter) &&
           (monthFilter == null ||
               (e.date.year == monthFilter!.year &&
                   e.date.month == monthFilter!.month)) &&
@@ -678,6 +692,12 @@ class _HomeState extends State<Home> {
                             : '参考折合 ¥ ${money(ledger.estimatedCnyCents()!)} · ${ledger.rateSource == 'apihz' ? '接口盒子' : '手动汇率'}，非实时')
                       : null,
                 ),
+                const SizedBox(height: 16),
+                MonthlyOverview(
+                  ledger: ledger,
+                  currency: displayCurrency,
+                  today: now,
+                ),
                 const SizedBox(height: 28),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -741,6 +761,32 @@ class _HomeState extends State<Home> {
                     ),
                   ],
                   onChanged: (v) => setState(() => accountFilter = v ?? ''),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  key: ValueKey('bill-category-$categoryFilter'),
+                  initialValue: effectiveCategoryFilter,
+                  decoration: const InputDecoration(labelText: '分类筛选'),
+                  items: [
+                    const DropdownMenuItem(value: '', child: Text('全部分类')),
+                    ...ledger
+                        .categoriesFor(false)
+                        .map(
+                          (v) => DropdownMenuItem(
+                            value: '0:$v',
+                            child: Text('支出 · $v'),
+                          ),
+                        ),
+                    ...ledger
+                        .categoriesFor(true)
+                        .map(
+                          (v) => DropdownMenuItem(
+                            value: '1:$v',
+                            child: Text('收入 · $v'),
+                          ),
+                        ),
+                  ],
+                  onChanged: (v) => setState(() => categoryFilter = v ?? ''),
                 ),
                 Row(
                   children: [
@@ -1207,9 +1253,7 @@ class _EntryFormState extends State<EntryForm> {
 
   @override
   Widget build(BuildContext context) {
-    final categories = income
-        ? ['工资', '奖金', '转入', '其他收入']
-        : ['餐饮', '购物', '交通', '住房', '娱乐', '医疗', '其他支出'];
+    final categories = widget.ledger.categoriesFor(income);
     return Padding(
       padding: EdgeInsets.fromLTRB(
         22,
@@ -1241,7 +1285,8 @@ class _EntryFormState extends State<EntryForm> {
                 selected: {income},
                 onSelectionChanged: (s) => setState(() {
                   income = s.first;
-                  category = income ? '工资' : '餐饮';
+                  category =
+                      widget.ledger.categoriesFor(income).firstOrNull ?? '';
                   categoryInput.text = category;
                 }),
               ),
@@ -1280,7 +1325,7 @@ class _EntryFormState extends State<EntryForm> {
                 maxLength: 30,
                 decoration: const InputDecoration(
                   labelText: '分类',
-                  hintText: '选择常用分类或输入新分类',
+                  hintText: '选择分类或输入新分类，保存后同步到分类管理',
                 ),
                 validator: (v) =>
                     v == null || v.trim().isEmpty ? '请输入分类' : null,
@@ -1552,6 +1597,14 @@ class _ReportViewState extends State<ReportView> {
               ),
             ],
           ),
+        ),
+        const SizedBox(height: 16),
+        AiAnalysisPanel(
+          key: ValueKey('ai-$year-$month-$currency-$selectedAccount'),
+          report: r,
+          year: year,
+          month: month == 0 ? null : month,
+          currency: currency,
         ),
         const SizedBox(height: 24),
         const Text(
@@ -2103,8 +2156,8 @@ class _CategoriesPageState extends State<CategoriesPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> rename(String oldName) async {
-    final controller = TextEditingController(text: oldName);
+  Future<void> rename(String oldName, bool income) async {
+    var name = oldName;
     final form = GlobalKey<FormState>();
     final next = await showDialog<String>(
       context: context,
@@ -2118,7 +2171,8 @@ class _CategoriesPageState extends State<CategoriesPage> {
               const Text('将同时修改所有使用该名称的账单和周期规则。'),
               const SizedBox(height: 12),
               TextFormField(
-                controller: controller,
+                initialValue: oldName,
+                onChanged: (v) => name = v,
                 maxLength: 30,
                 decoration: const InputDecoration(labelText: '分类名称'),
                 validator: (v) =>
@@ -2135,7 +2189,7 @@ class _CategoriesPageState extends State<CategoriesPage> {
           FilledButton(
             onPressed: () {
               if (form.currentState!.validate()) {
-                Navigator.pop(c, controller.text.trim());
+                Navigator.pop(c, name.trim());
               }
             },
             child: const Text('保存'),
@@ -2143,10 +2197,9 @@ class _CategoriesPageState extends State<CategoriesPage> {
         ],
       ),
     );
-    controller.dispose();
     if (next == null || next == oldName) return;
     try {
-      await widget.ledger.renameCategory(oldName, next);
+      await widget.ledger.renameCategory(oldName, next, income: income);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -2155,39 +2208,104 @@ class _CategoriesPageState extends State<CategoriesPage> {
     }
   }
 
+  Future<void> addCategory() async {
+    var name = '';
+    final form = GlobalKey<FormState>();
+    bool income = false;
+    final result = await showDialog<(String, bool)>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('新增分类标签'),
+          content: Form(
+            key: form,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('支出')),
+                    ButtonSegment(value: true, label: Text('收入')),
+                  ],
+                  selected: {income},
+                  onSelectionChanged: (v) =>
+                      setDialogState(() => income = v.first),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  onChanged: (v) => name = v,
+                  autofocus: true,
+                  maxLength: 30,
+                  decoration: const InputDecoration(labelText: '分类名称'),
+                  validator: (v) =>
+                      v == null || v.trim().isEmpty ? '请输入分类名称' : null,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (form.currentState!.validate()) {
+                  Navigator.pop(dialogContext, (name.trim(), income));
+                }
+              },
+              child: const Text('添加'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null) return;
+    try {
+      await widget.ledger.addCategory(result.$1, income: result.$2);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e is StateError ? e.message : '添加失败，请重试')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final categories = {
-      ...widget.ledger.entries
-          .where((e) => e.transferId.isEmpty)
-          .map((e) => e.category),
-      ...widget.ledger.recurring.map((r) => r.category),
-    }.toList()..sort();
     return Scaffold(
       appBar: AppBar(title: const Text('分类管理')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: addCategory,
+        icon: const Icon(Icons.add),
+        label: const Text('新增分类'),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const Text('账单中输入的分类会自动显示在这里；可重命名或合并到已有分类。'),
-          if (categories.isEmpty)
-            const EmptyState(
-              icon: Icons.category_outlined,
-              title: '暂无分类',
-              subtitle: '记账时输入分类即可添加。',
-            )
-          else
-            ...categories.map(
-              (name) => Card(
-                child: ListTile(
-                  title: Text(name),
-                  trailing: IconButton(
-                    tooltip: '重命名分类',
-                    icon: const Icon(Icons.edit_outlined),
-                    onPressed: () => rename(name),
+          const Text('这里的标签会同步到记一笔；在记一笔输入的新分类也会自动加入。'),
+          for (final income in [false, true]) ...[
+            const SizedBox(height: 18),
+            Text(
+              income ? '收入分类' : '支出分类',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            ...widget.ledger
+                .categoriesFor(income)
+                .map(
+                  (name) => Card(
+                    child: ListTile(
+                      title: Text(name),
+                      trailing: IconButton(
+                        tooltip: '重命名分类',
+                        icon: const Icon(Icons.edit_outlined),
+                        onPressed: () => rename(name, income),
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
+          ],
         ],
       ),
     );
