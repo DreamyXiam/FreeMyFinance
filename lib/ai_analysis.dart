@@ -36,9 +36,13 @@ class AiAnalysisService {
   Future<String> analyze({
     required String apiKey,
     required Map<String, dynamic> summary,
+    required String prompt,
   }) async {
     if (apiKey.trim().isEmpty) {
       throw const AiAnalysisException('请先填写 DeepSeek API Key');
+    }
+    if (prompt.trim().isEmpty || prompt.length > 2000) {
+      throw const AiAnalysisException('请填写不超过 2000 字的分析提示词');
     }
     late http.Response response;
     try {
@@ -56,9 +60,12 @@ class AiAnalysisService {
               'messages': [
                 {
                   'role': 'system',
-                  'content': '你是个人记账数据分析助手。请用中文简洁分析收入、支出和分类占比，指出可观察到的变化或异常，并提出可执行的记账建议。仅依据给定汇总数据，不推断身份，不做投资建议。数据可能只有一个月，缺少趋势证据时不得声称存在趋势。',
+                  'content': '你是个人记账数据分析助手。仅依据提供的汇总数据回答；不要推断身份、编造趋势或提供投资建议。',
                 },
-                {'role': 'user', 'content': jsonEncode(summary)},
+                {
+                  'role': 'user',
+                  'content': '${prompt.trim()}\n\n账单汇总：${jsonEncode(summary)}',
+                },
               ],
             }),
           )

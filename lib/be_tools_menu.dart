@@ -26,6 +26,12 @@ const _groups = <String, List<_ToolItem>>{
     _ToolItem('categories', '分类管理', '整理账单分类', Icons.category_outlined),
     _ToolItem('reminders', '记账提醒', '设置每日提醒', Icons.notifications_none_rounded),
     _ToolItem('rates', '汇率设置', '手动或联网获取参考汇率', Icons.currency_exchange_rounded),
+    _ToolItem(
+      'ai-settings',
+      'AI 分析设置',
+      'DeepSeek API Key 与默认提示词',
+      Icons.auto_awesome_outlined,
+    ),
   ],
   '数据与备份': [
     _ToolItem(

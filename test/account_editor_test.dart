@@ -15,6 +15,8 @@ void main() {
       SharedPreferences.setMockInitialValues({});
       await t.pumpWidget(const FinanceApp());
       await t.pumpAndSettle();
+      await t.tap(find.text('账户').last);
+      await t.pumpAndSettle();
       await t.tap(find.byTooltip('添加账户'));
       await t.pumpAndSettle();
       expect(find.text('选择账户分类'), findsOneWidget);

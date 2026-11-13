@@ -25,6 +25,7 @@ void main() {
       await t.pumpAndSettle();
       expect(find.text('工具与设置'), findsOneWidget);
       expect(find.text('周期账单'), findsOneWidget);
+      expect(find.text('AI 分析设置'), findsOneWidget);
       await t.scrollUntilVisible(
         find.text('恢复备份'),
         250,

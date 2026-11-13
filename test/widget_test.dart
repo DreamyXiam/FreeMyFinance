@@ -10,6 +10,9 @@ void main() {
     await tester.pumpWidget(const FinanceApp());
     await tester.pumpAndSettle();
     expect(find.textContaining('${DateTime.now().year}/'), findsWidgets);
+    expect(find.byTooltip('添加账户'), findsNothing);
+    await tester.tap(find.text('账户').last);
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('添加账户'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('储蓄卡'));

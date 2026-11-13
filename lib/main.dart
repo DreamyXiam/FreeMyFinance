@@ -23,6 +23,7 @@ import 'reminders.dart';
 import 'remote_rates.dart';
 import 'monthly_overview.dart';
 import 'ai_analysis_panel.dart';
+import 'ai_settings.dart';
 import 'lock_controller.dart';
 
 const navy = beInk, teal = beBlue, canvas = beBackground, ink = beInk;
@@ -490,6 +491,10 @@ class _HomeState extends State<Home> {
       Navigator.of(context).push(
         MaterialPageRoute<void>(builder: (_) => RatesPage(ledger: ledger)),
       );
+    } else if (value == 'ai-settings') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => AiSettingsPage(ledger: ledger)),
+      );
     } else if (value == 'storage-security') {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
@@ -646,7 +651,7 @@ class _HomeState extends State<Home> {
         actions: [
           BePressFeedback(
             child: IconButton(
-              tooltip: '备份与恢复',
+              tooltip: '工具与设置',
               icon: const Icon(Icons.more_horiz_rounded),
               onPressed: () async {
                 final value = await showBeToolsMenu(context);
@@ -658,11 +663,6 @@ class _HomeState extends State<Home> {
             onPressed: addTransfer,
             tooltip: '账户转账',
             icon: const Icon(Icons.swap_horiz),
-          ),
-          IconButton(
-            onPressed: addAccount,
-            tooltip: '添加账户',
-            icon: const Icon(Icons.add_card_rounded),
           ),
         ],
       ),
@@ -1601,10 +1601,12 @@ class _ReportViewState extends State<ReportView> {
         const SizedBox(height: 16),
         AiAnalysisPanel(
           key: ValueKey('ai-$year-$month-$currency-$selectedAccount'),
+          ledger: widget.ledger,
           report: r,
           year: year,
           month: month == 0 ? null : month,
           currency: currency,
+          singleAccount: selectedAccount.isNotEmpty,
         ),
         const SizedBox(height: 24),
         const Text(

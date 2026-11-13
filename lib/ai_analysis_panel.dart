@@ -1,52 +1,75 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'ai_analysis.dart';
+import 'ai_history_page.dart';
+import 'ai_settings.dart';
+import 'ledger.dart';
 import 'reports.dart';
 
 class AiAnalysisPanel extends StatefulWidget {
+  final Ledger ledger;
   final Report report;
   final int year;
   final int? month;
   final String currency;
+  final bool singleAccount;
+  final AiKeyStore? keyStore;
+  final AiAnalysisService Function()? serviceFactory;
   const AiAnalysisPanel({
     super.key,
+    required this.ledger,
     required this.report,
     required this.year,
     required this.month,
     required this.currency,
+    required this.singleAccount,
+    this.keyStore,
+    this.serviceFactory,
   });
   @override
   State<AiAnalysisPanel> createState() => _AiAnalysisPanelState();
 }
 
 class _AiAnalysisPanelState extends State<AiAnalysisPanel> {
-  static const keyName = 'deepseek_api_key';
-  final storage = const FlutterSecureStorage();
+  late final keyStore = widget.keyStore ?? const AiKeyStore();
   bool busy = false;
   String? result;
 
   Future<void> run() async {
-    final service = AiAnalysisService();
-    final summary = service.summary(
-      report: widget.report,
-      year: widget.year,
-      month: widget.month,
-      currency: widget.currency,
-    );
-    final key = await storage.read(key: keyName);
-    if (!mounted) {
-      service.close();
-      return;
-    }
-    var enteredKey = key ?? '';
-    var saveKey = true;
-    final supplied = await showDialog<(String, bool)>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
+    final service = widget.serviceFactory?.call() ?? AiAnalysisService();
+    try {
+      final key = await keyStore.read();
+      if (!mounted) return;
+      if (key == null || key.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('请先在设置中填写 DeepSeek API Key'),
+            action: SnackBarAction(
+              label: '去设置',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => AiSettingsPage(ledger: widget.ledger),
+                ),
+              ),
+            ),
+          ),
+        );
+        return;
+      }
+      final summary = service.summary(
+        report: widget.report,
+        year: widget.year,
+        month: widget.month,
+        currency: widget.currency,
+      );
+      final summaryText = jsonEncode(summary);
+      var prompt = widget.ledger.aiPrompt;
+      final confirmedPrompt = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
           title: const Text('AI 分析账单'),
           content: SingleChildScrollView(
             child: Column(
@@ -54,29 +77,21 @@ class _AiAnalysisPanelState extends State<AiAnalysisPanel> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '将把当前统计范围的收支总额与支出分类汇总发送给 DeepSeek。不会发送账户名称、卡号、账单备注或逐笔明细。调用可能产生 API 费用。',
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  '发送内容：${jsonEncode(summary)}',
-                  style: Theme.of(context).textTheme.bodySmall,
+                  '将向 DeepSeek 发送当前筛选范围的收支及分类汇总。不会发送账户名称、卡号、备注或逐笔账单；调用可能产生 API 费用。',
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
-                  initialValue: key,
-                  onChanged: (v) => enteredKey = v,
-                  obscureText: true,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: const InputDecoration(
-                    labelText: 'DeepSeek API Key',
-                  ),
+                  initialValue: prompt,
+                  onChanged: (v) => prompt = v,
+                  minLines: 4,
+                  maxLines: 8,
+                  maxLength: 2000,
+                  decoration: const InputDecoration(labelText: '分析提示词'),
                 ),
-                CheckboxListTile(
-                  value: saveKey,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('在此设备安全保存 Key'),
-                  onChanged: (v) => update(() => saveKey = v ?? false),
+                const SizedBox(height: 10),
+                Text(
+                  '发送的账单汇总：$summaryText',
+                  style: Theme.of(dialogContext).textTheme.bodySmall,
                 ),
               ],
             ),
@@ -87,49 +102,58 @@ class _AiAnalysisPanelState extends State<AiAnalysisPanel> {
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: () =>
-                  Navigator.pop(dialogContext, (enteredKey.trim(), saveKey)),
+              onPressed: () => Navigator.pop(dialogContext, prompt.trim()),
               child: const Text('发送并分析'),
             ),
           ],
         ),
-      ),
-    );
-    if (supplied == null) {
-      service.close();
-      return;
-    }
-    if (supplied.$1.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('请填写 DeepSeek API Key')));
-      }
-      service.close();
-      return;
-    }
-    setState(() {
-      busy = true;
-      result = null;
-    });
-    try {
-      if (supplied.$2) {
-        await storage.write(key: keyName, value: supplied.$1);
-      } else {
-        await storage.delete(key: keyName);
-      }
-      final answer = await service.analyze(
-        apiKey: supplied.$1,
-        summary: summary,
       );
-      if (mounted) setState(() => result = answer);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(e is AiAnalysisException ? e.message : '分析失败，请重试'),
+      if (!mounted || confirmedPrompt == null) return;
+      if (confirmedPrompt.isEmpty) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('请填写分析提示词')));
+        return;
+      }
+      setState(() {
+        busy = true;
+        result = null;
+      });
+      final answer = await service.analyze(
+        apiKey: key,
+        summary: summary,
+        prompt: confirmedPrompt,
+      );
+      if (!mounted) return;
+      setState(() => result = answer);
+      try {
+        final now = DateTime.now();
+        await widget.ledger.addAiAnalysis(
+          AiAnalysisRecord(
+            id: now.microsecondsSinceEpoch.toString(),
+            createdAt: now,
+            period: summary['period'] as String,
+            currency: widget.currency,
+            scope: widget.singleAccount ? '单个账户' : '全部账户',
+            prompt: confirmedPrompt,
+            summary: summaryText,
+            response: answer,
           ),
         );
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('分析完成，但保存历史记录失败')));
+        }
+      }
+    } on AiAnalysisException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('分析失败，请检查设置后重试')));
       }
     } finally {
       service.close();
@@ -160,7 +184,18 @@ class _AiAnalysisPanelState extends State<AiAnalysisPanel> {
               ),
             ],
           ),
+          const SizedBox(height: 6),
           const Text('基于当前筛选的收支与分类汇总生成建议'),
+          TextButton.icon(
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => AiHistoryPage(ledger: widget.ledger),
+              ),
+            ),
+            icon: const Icon(Icons.history),
+            label: Text('历史记录 (${widget.ledger.aiHistory.length})'),
+          ),
           if (busy)
             const Padding(
               padding: EdgeInsets.only(top: 12),

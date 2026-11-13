@@ -41,9 +41,14 @@ void main() {
       month: 11,
       currency: 'CNY',
     );
-    final answer = await service.analyze(apiKey: 'secret', summary: summary);
+    final answer = await service.analyze(
+      apiKey: 'secret',
+      summary: summary,
+      prompt: '请分析这份月度账单',
+    );
     expect(answer, '支出主要在餐饮。');
     expect(sent['model'], 'deepseek-flash');
+    expect(jsonEncode(sent), contains('请分析这份月度账单'));
     expect(jsonEncode(sent), isNot(contains('secret')));
     expect(jsonEncode(sent), isNot(contains('cardRef')));
     expect(summary['expense_categories'], {'餐饮': 30.0});
@@ -55,7 +60,7 @@ void main() {
       client: MockClient((_) async => http.Response('{}', 401)),
     );
     await expectLater(
-      service.analyze(apiKey: 'sensitive', summary: {}),
+      service.analyze(apiKey: 'sensitive', summary: {}, prompt: '分析'),
       throwsA(
         isA<AiAnalysisException>().having(
           (e) => e.message,

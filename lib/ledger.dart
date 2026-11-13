@@ -178,6 +178,70 @@ class Recurring {
   }
 }
 
+const defaultAiAnalysisPrompt =
+    '请根据所选期间的账单汇总，分析收入、支出、结余和主要支出分类占比。指出值得关注的开支，并给出最多三条具体、可执行的记账建议。请引用数据中的金额；没有对比数据时不要推断趋势，也不要提供投资建议。';
+
+class AiAnalysisRecord {
+  final String id, period, currency, scope, prompt, summary, response;
+  final DateTime createdAt;
+  const AiAnalysisRecord({
+    required this.id,
+    required this.createdAt,
+    required this.period,
+    required this.currency,
+    required this.scope,
+    required this.prompt,
+    required this.summary,
+    required this.response,
+  });
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'createdAt': createdAt.toIso8601String(),
+    'period': period,
+    'currency': currency,
+    'scope': scope,
+    'prompt': prompt,
+    'summary': summary,
+    'response': response,
+  };
+  factory AiAnalysisRecord.fromJson(dynamic raw) {
+    if (raw is! Map<String, dynamic> ||
+        raw['id'] is! String ||
+        (raw['id'] as String).isEmpty ||
+        (raw['id'] as String).length > 80 ||
+        raw['createdAt'] is! String ||
+        raw['period'] is! String ||
+        !RegExp(r'^\d{4}(-(?:0[1-9]|1[0-2]))?$').hasMatch(raw['period']) ||
+        !Account.supportedCurrencies.contains(raw['currency']) ||
+        (raw['scope'] != '全部账户' && raw['scope'] != '单个账户') ||
+        raw['prompt'] is! String ||
+        (raw['prompt'] as String).trim().isEmpty ||
+        (raw['prompt'] as String).length > 2000 ||
+        raw['summary'] is! String ||
+        (raw['summary'] as String).isEmpty ||
+        (raw['summary'] as String).length > 20000 ||
+        raw['response'] is! String ||
+        (raw['response'] as String).trim().isEmpty ||
+        (raw['response'] as String).length > 30000) {
+      throw const FormatException('AI 分析记录无效');
+    }
+    try {
+      return AiAnalysisRecord(
+        id: raw['id'],
+        createdAt: DateTime.parse(raw['createdAt']),
+        period: raw['period'],
+        currency: raw['currency'],
+        scope: raw['scope'],
+        prompt: raw['prompt'],
+        summary: raw['summary'],
+        response: raw['response'],
+      );
+    } on FormatException {
+      throw const FormatException('AI 分析记录日期无效');
+    }
+  }
+}
+
 class Ledger extends ChangeNotifier {
   static const defaultExpenseCategories = [
     '餐饮',
@@ -217,6 +281,8 @@ class Ledger extends ChangeNotifier {
   final List<Recurring> recurring;
   final List<String> expenseCategories;
   final List<String> incomeCategories;
+  final List<AiAnalysisRecord> aiHistory;
+  String aiPrompt;
   final Map<String, int> manualRates;
   DateTime? ratesUpdatedAt;
   String rateSource;
@@ -234,7 +300,10 @@ class Ledger extends ChangeNotifier {
     this.rateProviderTime,
     List<String>? expenses,
     List<String>? incomes,
+    this.aiPrompt = defaultAiAnalysisPrompt,
+    List<AiAnalysisRecord>? history,
   ]) : recurring = rules ?? [],
+       aiHistory = history ?? [],
        expenseCategories = _mergeCategories(
          expenses ?? defaultExpenseCategories,
          entries,
@@ -268,6 +337,10 @@ class Ledger extends ChangeNotifier {
       j['rateProviderTime'],
       _categoryList(j['expenseCategories'], defaultExpenseCategories),
       _categoryList(j['incomeCategories'], defaultIncomeCategories),
+      j['aiPrompt'] ?? defaultAiAnalysisPrompt,
+      (j['aiHistory'] as List? ?? [])
+          .map((e) => AiAnalysisRecord.fromJson(e))
+          .toList(),
     );
   }
 
@@ -282,6 +355,8 @@ class Ledger extends ChangeNotifier {
     String? nextProviderTime,
     List<String>? expenses,
     List<String>? incomes,
+    String? prompt,
+    List<AiAnalysisRecord>? history,
   }) async {
     if (_saving) throw StateError('已有操作正在保存，请重试');
     _saving = true;
@@ -304,6 +379,8 @@ class Ledger extends ChangeNotifier {
           'entries': nextEntries.map((e) => e.toJson()).toList(),
           'expenseCategories': nextExpenses,
           'incomeCategories': nextIncomes,
+          'aiPrompt': prompt ?? aiPrompt,
+          'aiHistory': (history ?? aiHistory).map((r) => r.toJson()).toList(),
           'monthlyBudgetCents': budget ?? monthlyBudgetCents,
           'recurring': (rules ?? recurring).map((r) => r.toJson()).toList(),
           'manualRates': rates ?? manualRates,
@@ -318,6 +395,12 @@ class Ledger extends ChangeNotifier {
         }),
       );
       monthlyBudgetCents = budget ?? monthlyBudgetCents;
+      aiPrompt = prompt ?? aiPrompt;
+      if (history != null) {
+        aiHistory
+          ..clear()
+          ..addAll(history);
+      }
       expenseCategories
         ..clear()
         ..addAll(nextExpenses);
@@ -359,6 +442,8 @@ class Ledger extends ChangeNotifier {
         'entries': entries.map((e) => e.toJson()).toList(),
         'expenseCategories': expenseCategories,
         'incomeCategories': incomeCategories,
+        'aiPrompt': aiPrompt,
+        'aiHistory': aiHistory.map((r) => r.toJson()).toList(),
         'monthlyBudgetCents': monthlyBudgetCents,
         'recurring': recurring.map((r) => r.toJson()).toList(),
         'manualRates': manualRates,
@@ -375,9 +460,11 @@ class Ledger extends ChangeNotifier {
 
   String exportBackup() => jsonEncode({
     'format': 'FreeMyFinance',
-    'version': 10,
+    'version': 11,
     'expenseCategories': expenseCategories,
     'incomeCategories': incomeCategories,
+    'aiPrompt': aiPrompt,
+    'aiHistory': aiHistory.map((r) => r.toJson()).toList(),
     'manualRates': manualRates,
     'rateSource': rateSource,
     'rateProviderTime': rateProviderTime,
@@ -402,7 +489,8 @@ class Ledger extends ChangeNotifier {
               data['version'] != 7 &&
               data['version'] != 8 &&
               data['version'] != 9 &&
-              data['version'] != 10) ||
+              data['version'] != 10 &&
+              data['version'] != 11) ||
           data['accounts'] is! List ||
           data['entries'] is! List) {
         throw const FormatException('无效的备份格式');
@@ -574,6 +662,20 @@ class Ledger extends ChangeNotifier {
         data['incomeCategories'],
         defaultIncomeCategories,
       );
+      final rawPrompt = data['aiPrompt'] ?? defaultAiAnalysisPrompt;
+      if (rawPrompt is! String ||
+          rawPrompt.trim().isEmpty ||
+          rawPrompt.length > 2000) {
+        throw const FormatException('AI 提示词无效');
+      }
+      final rawHistory = data['aiHistory'] ?? [];
+      if (rawHistory is! List) throw const FormatException('AI 分析记录无效');
+      final newHistory = rawHistory
+          .map((r) => AiAnalysisRecord.fromJson(r))
+          .toList();
+      if (newHistory.map((r) => r.id).toSet().length != newHistory.length) {
+        throw const FormatException('AI 分析记录编号重复');
+      }
       await _commit(
         newAccounts,
         newEntries,
@@ -585,6 +687,8 @@ class Ledger extends ChangeNotifier {
         nextProviderTime: providerTime,
         expenses: newExpenses,
         incomes: newIncomes,
+        prompt: rawPrompt,
+        history: newHistory,
       );
     } on FormatException {
       rethrow;
@@ -639,6 +743,28 @@ class Ledger extends ChangeNotifier {
   Future<void> setMonthlyBudget(int cents) async {
     if (cents < 0) throw StateError('预算不能为负');
     await _commit([...accounts], [...entries], budget: cents);
+  }
+
+  Future<void> setAiPrompt(String value) async {
+    final next = value.trim();
+    if (next.isEmpty || next.length > 2000) {
+      throw StateError('提示词长度须为 1 至 2000 字');
+    }
+    await _commit([...accounts], [...entries], prompt: next);
+  }
+
+  Future<void> addAiAnalysis(AiAnalysisRecord record) async {
+    AiAnalysisRecord.fromJson(record.toJson());
+    if (aiHistory.any((r) => r.id == record.id)) throw StateError('分析记录已存在');
+    await _commit([...accounts], [...entries], history: [record, ...aiHistory]);
+  }
+
+  Future<void> deleteAiAnalysis(String id) async {
+    await _commit(
+      [...accounts],
+      [...entries],
+      history: aiHistory.where((r) => r.id != id).toList(),
+    );
   }
 
   List<String> categoriesFor(bool income) =>

@@ -128,7 +128,7 @@ class _MonthlyOverviewState extends State<MonthlyOverview> {
               itemCount: cellCount,
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 7,
-              mainAxisExtent: 58,
+                mainAxisExtent: 58,
               ),
               itemBuilder: (context, index) {
                 final date = DateTime(
