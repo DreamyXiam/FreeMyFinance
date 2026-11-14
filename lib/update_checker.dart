@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-const appVersion = '1.0.0';
+const appVersion = '1.0.1';
 
 class AvailableUpdate {
   final String version, url, notes;

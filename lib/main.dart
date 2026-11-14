@@ -736,11 +736,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                 color: beBlue,
                 borderRadius: BorderRadius.circular(11),
               ),
-              child: const Icon(
-                Icons.account_balance_wallet_rounded,
-                color: Colors.white,
-                size: 17,
-              ),
+              clipBehavior: Clip.antiAlias,
+              child: Image.asset('assets/app_icon.png', fit: BoxFit.cover),
             ),
             const SizedBox(width: 10),
             const Expanded(

@@ -8,7 +8,7 @@
         android:appCategory="productivity"
         android:label="FreeMyFinance"
         android:name="${applicationName}"
-        android:icon="@drawable/ic_brand">
+        android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
             android:exported="true"
