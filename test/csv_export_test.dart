@@ -22,5 +22,24 @@ void main() {
     expect(out, contains('"hello, ""x"""'));
     expect(out, contains('12.34'));
     expect(out, contains('2026-11-04'));
+    expect(out, contains('已付款'));
+  });
+  test('pending recurring bills export as unpaid', () {
+    final out = exportCsv(
+      [Account(id: 'a', name: '卡', openingCents: 0)],
+      [
+        Entry(
+          id: 'r',
+          accountId: 'a',
+          cents: 100,
+          income: false,
+          category: '订阅',
+          note: '',
+          date: DateTime(2026, 11, 4),
+          pending: true,
+        ),
+      ],
+    );
+    expect(out, contains('待付款'));
   });
 }

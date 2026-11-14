@@ -1,9 +1,9 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -24,7 +24,10 @@ import 'remote_rates.dart';
 import 'monthly_overview.dart';
 import 'ai_analysis_panel.dart';
 import 'ai_settings.dart';
+import 'category_swipe_tile.dart';
+import 'account_icon.dart';
 import 'lock_controller.dart';
+import 'update_checker.dart';
 
 const navy = beInk, teal = beBlue, canvas = beBackground, ink = beInk;
 String currencySymbol(String code) => switch (code) {
@@ -60,6 +63,12 @@ int? parseSignedAmount(String value) {
   if (!text.startsWith('-')) return parseAmount(text);
   final n = parseAmount(text.substring(1));
   return n == null ? null : -n;
+}
+
+int? parseBudgetAmount(String value) {
+  final text = value.trim();
+  if (RegExp(r'^0+(?:\.0{1,2})?$').hasMatch(text)) return 0;
+  return parseAmount(text);
 }
 
 void main() {
@@ -187,11 +196,17 @@ class LockScope extends InheritedNotifier<LockController> {
       context.dependOnInheritedWidgetOfExactType<LockScope>()!.notifier!;
 }
 
-class LoadLedger extends StatelessWidget {
+class LoadLedger extends StatefulWidget {
   const LoadLedger({super.key});
   @override
+  State<LoadLedger> createState() => _LoadLedgerState();
+}
+
+class _LoadLedgerState extends State<LoadLedger> {
+  late final Future<Ledger> _ledgerFuture = Ledger.load();
+  @override
   Widget build(BuildContext context) => FutureBuilder<Ledger>(
-    future: Ledger.load(),
+    future: _ledgerFuture,
     builder: (context, s) {
       if (s.hasError) {
         return Scaffold(
@@ -220,24 +235,115 @@ class Home extends StatefulWidget {
   State<Home> createState() => _HomeState();
 }
 
-class _HomeState extends State<Home> {
+class _HomeState extends State<Home> with WidgetsBindingObserver {
   int tab = 0;
+  final visitedTabs = <int>{0};
+  bool _generating = false;
   String search = '',
       accountFilter = '',
       categoryFilter = '',
       displayCurrency = 'CNY';
   DateTime? monthFilter;
+  DateTime? dayFilter;
+  final searchController = TextEditingController();
+  final billController = ScrollController();
   Ledger get ledger => widget.ledger;
   @override
   void initState() {
     super.initState();
     ledger.addListener(_update);
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _generateDueBills();
+      _checkForUpdates();
+    });
+  }
+
+  Future<void> _checkForUpdates() async {
+    final checker = UpdateChecker();
+    try {
+      final update = await checker.check(appVersion);
+      if (!mounted || update == null) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text('发现新版本 ${update.version}'),
+          content: SingleChildScrollView(
+            child: Text(
+              update.notes.isEmpty ? '新版本已在 GitHub Releases 发布。' : update.notes,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('稍后'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: update.url));
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('下载链接已复制，请在浏览器打开')),
+                  );
+                }
+              },
+              child: const Text('复制下载链接'),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {
+      // Offline startup must remain usable.
+    } finally {
+      checker.close();
+    }
+  }
+
+  Future<void> _generateDueBills() async {
+    if (!mounted || _generating) return;
+    _generating = true;
+    try {
+      await ledger.applyRecurring(DateTime.now());
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('到期账单自动生成失败，请在周期账单中重试')));
+      }
+    } finally {
+      _generating = false;
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _generateDueBills();
   }
 
   @override
   void dispose() {
     ledger.removeListener(_update);
+    WidgetsBinding.instance.removeObserver(this);
+    searchController.dispose();
+    billController.dispose();
     super.dispose();
+  }
+
+  void _openCalendarDay(DateTime date) {
+    searchController.clear();
+    setState(() {
+      dayFilter = DateTime(date.year, date.month, date.day);
+      monthFilter = null;
+      accountFilter = '';
+      categoryFilter = '';
+      search = '';
+      tab = 1;
+      visitedTabs.add(1);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && billController.hasClients) billController.jumpTo(0);
+    });
   }
 
   void _update() {
@@ -568,6 +674,21 @@ class _HomeState extends State<Home> {
     }
   }
 
+  Future<void> _markPaid(Entry entry) async {
+    try {
+      await ledger.markPaid(entry.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('已标记为已付款')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('标记付款失败，请重试')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final entries = [...ledger.entries]
@@ -579,22 +700,25 @@ class _HomeState extends State<Home> {
     final effectiveCategoryFilter = categoryValues.contains(categoryFilter)
         ? categoryFilter
         : '';
+    final accountNames = {
+      for (final account in ledger.accounts) account.id: account.name,
+    };
+    final term = search.trim().toLowerCase();
     final filteredEntries = entries.where((e) {
-      final accountName = ledger.accounts
-          .where((a) => a.id == e.accountId)
-          .map((a) => a.name)
-          .join();
-      final term = search.trim().toLowerCase();
       return (accountFilter.isEmpty || e.accountId == accountFilter) &&
           (effectiveCategoryFilter.isEmpty ||
               '${e.income ? 1 : 0}:${e.category}' == effectiveCategoryFilter) &&
+          (dayFilter == null ||
+              (e.date.year == dayFilter!.year &&
+                  e.date.month == dayFilter!.month &&
+                  e.date.day == dayFilter!.day)) &&
           (monthFilter == null ||
               (e.date.year == monthFilter!.year &&
                   e.date.month == monthFilter!.month)) &&
           (term.isEmpty ||
-              '${e.category} ${e.note} $accountName'.toLowerCase().contains(
-                term,
-              ));
+              '${e.category} ${e.note} ${accountNames[e.accountId] ?? ''}'
+                  .toLowerCase()
+                  .contains(term));
     }).toList();
     final now = DateTime.now();
     final total = ledger.accounts
@@ -684,19 +808,20 @@ class _HomeState extends State<Home> {
                   onCurrencyChanged: (value) =>
                       setState(() => displayCurrency = value),
                   estimate:
-                      ledger.accounts.any(
+                      !ledger.accounts.any(
                         (a) => a.currency != 'CNY' && a.includeInNetWorth,
                       )
-                      ? (ledger.estimatedCnyCents() == null
+                      ? '总余额 ¥ ${money(ledger.estimatedCnyCents() ?? 0)}'
+                      : (ledger.estimatedCnyCents() == null
                             ? '未设置全部汇率，无法折合人民币'
-                            : '参考折合 ¥ ${money(ledger.estimatedCnyCents()!)} · ${ledger.rateSource == 'apihz' ? '接口盒子' : '手动汇率'}，非实时')
-                      : null,
+                            : '总余额（参考折合）¥ ${money(ledger.estimatedCnyCents()!)} · ${ledger.rateSource == 'apihz' ? '接口盒子' : '手动汇率'}，非实时'),
                 ),
                 const SizedBox(height: 16),
                 MonthlyOverview(
                   ledger: ledger,
                   currency: displayCurrency,
                   today: now,
+                  onDaySelected: _openCalendarDay,
                 ),
                 const SizedBox(height: 28),
                 Row(
@@ -711,7 +836,10 @@ class _HomeState extends State<Home> {
                       ),
                     ),
                     TextButton(
-                      onPressed: () => setState(() => tab = 1),
+                      onPressed: () => setState(() {
+                        tab = 1;
+                        visitedTabs.add(1);
+                      }),
                       child: const Text('查看全部'),
                     ),
                   ],
@@ -730,233 +858,275 @@ class _HomeState extends State<Home> {
                           entry: e,
                           ledger: ledger,
                           onDelete: () => _delete(e),
-                          onEdit: () => addEntry(e),
+                          onEdit: () => e.pending ? _markPaid(e) : addEntry(e),
                         ),
                       ),
               ],
             ),
-            ListView(
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
-              children: [
-                const PageTitle('账单', '每一笔收支，都在这里'),
-                const SizedBox(height: 18),
-                TextField(
-                  decoration: const InputDecoration(
-                    labelText: '搜索分类、备注或账户',
-                    prefixIcon: Icon(Icons.search),
-                  ),
-                  onChanged: (v) => setState(() => search = v),
-                ),
-                const SizedBox(height: 10),
-                DropdownButtonFormField<String>(
-                  initialValue:
-                      ledger.accounts.any((a) => a.id == accountFilter)
-                      ? accountFilter
-                      : '',
-                  decoration: const InputDecoration(labelText: '账户筛选'),
-                  items: [
-                    const DropdownMenuItem(value: '', child: Text('全部账户')),
-                    ...ledger.accounts.map(
-                      (a) => DropdownMenuItem(value: a.id, child: Text(a.name)),
-                    ),
-                  ],
-                  onChanged: (v) => setState(() => accountFilter = v ?? ''),
-                ),
-                const SizedBox(height: 10),
-                DropdownButtonFormField<String>(
-                  key: ValueKey('bill-category-$categoryFilter'),
-                  initialValue: effectiveCategoryFilter,
-                  decoration: const InputDecoration(labelText: '分类筛选'),
-                  items: [
-                    const DropdownMenuItem(value: '', child: Text('全部分类')),
-                    ...ledger
-                        .categoriesFor(false)
-                        .map(
-                          (v) => DropdownMenuItem(
-                            value: '0:$v',
-                            child: Text('支出 · $v'),
-                          ),
-                        ),
-                    ...ledger
-                        .categoriesFor(true)
-                        .map(
-                          (v) => DropdownMenuItem(
-                            value: '1:$v',
-                            child: Text('收入 · $v'),
-                          ),
-                        ),
-                  ],
-                  onChanged: (v) => setState(() => categoryFilter = v ?? ''),
-                ),
-                Row(
-                  children: [
-                    TextButton.icon(
-                      onPressed: () async {
-                        final d = await showDatePicker(
-                          context: context,
-                          initialDate: monthFilter ?? DateTime.now(),
-                          firstDate: DateTime(2000),
-                          lastDate: DateTime(2100),
-                        );
-                        if (d != null && mounted) {
-                          setState(() => monthFilter = d);
-                        }
-                      },
-                      icon: const Icon(Icons.calendar_month),
-                      label: Text(
-                        monthFilter == null
-                            ? '选择月份'
-                            : '${monthFilter!.year} 年 ${monthFilter!.month} 月',
-                      ),
-                    ),
-                    if (monthFilter != null)
-                      TextButton(
-                        onPressed: () => setState(() => monthFilter = null),
-                        child: const Text('全部日期'),
-                      ),
-                  ],
-                ),
-                if (filteredEntries.isEmpty)
-                  const EmptyState(
-                    icon: Icons.receipt_long_outlined,
-                    title: '没有匹配的账单',
-                    subtitle: '试试调整筛选条件，或添加新账单。',
-                  )
-                else
-                  ...filteredEntries.map(
-                    (e) => EntryTile(
-                      entry: e,
+            if (visitedTabs.contains(1))
+              ListView.builder(
+                controller: billController,
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
+                itemCount:
+                    1 + (filteredEntries.isEmpty ? 1 : filteredEntries.length),
+                itemBuilder: (context, index) {
+                  if (index > 0) {
+                    if (filteredEntries.isEmpty) {
+                      return const EmptyState(
+                        icon: Icons.receipt_long_outlined,
+                        title: '没有匹配的账单',
+                        subtitle: '试试调整筛选条件，或添加新账单。',
+                      );
+                    }
+                    final entry = filteredEntries[index - 1];
+                    return EntryTile(
+                      entry: entry,
                       ledger: ledger,
-                      onDelete: () => _delete(e),
-                      onEdit: () => addEntry(e),
-                    ),
-                  ),
-              ],
-            ),
-            ListView(
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const PageTitle('账户', '把不同账户放在一起管理'),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton.filledTonal(
-                          onPressed: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => WalletPage(ledger: ledger),
-                            ),
-                          ),
-                          tooltip: '打开卡包',
-                          icon: const Icon(Icons.style_outlined),
+                      onDelete: () => _delete(entry),
+                      onEdit: () =>
+                          entry.pending ? _markPaid(entry) : addEntry(entry),
+                    );
+                  }
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const PageTitle('账单', '每一笔收支，都在这里'),
+                      const SizedBox(height: 18),
+                      TextField(
+                        controller: searchController,
+                        decoration: const InputDecoration(
+                          labelText: '搜索分类、备注或账户',
+                          prefixIcon: Icon(Icons.search),
                         ),
-                        const SizedBox(width: 8),
-                        IconButton.filledTonal(
-                          onPressed: addAccount,
-                          tooltip: '添加账户',
-                          icon: const Icon(Icons.add),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                if (ledger.accounts.isEmpty)
-                  const EmptyState(
-                    icon: Icons.credit_card_outlined,
-                    title: '添加你的第一个账户',
-                    subtitle: '银行卡、现金或电子钱包都可以。',
-                  )
-                else
-                  ...ledger.accounts.map(
-                    (a) => Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.all(22),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: beBorder),
+                        onChanged: (v) => setState(() => search = v),
                       ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 48,
-                            height: 48,
-                            decoration: BoxDecoration(
-                              color: const Color(0xffeaf4ff),
-                              borderRadius: BorderRadius.circular(15),
-                            ),
-                            child: a.imageUrl.isEmpty
-                                ? const Icon(Icons.credit_card, color: teal)
-                                : ClipRRect(
-                                    borderRadius: BorderRadius.circular(15),
-                                    child: Image.network(
-                                      a.imageUrl,
-                                      fit: BoxFit.cover,
-                                      errorBuilder: (_, _, _) => const Icon(
-                                        Icons.credit_card,
-                                        color: teal,
-                                      ),
-                                    ),
-                                  ),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String>(
+                        initialValue:
+                            ledger.accounts.any((a) => a.id == accountFilter)
+                            ? accountFilter
+                            : '',
+                        decoration: const InputDecoration(labelText: '账户筛选'),
+                        items: [
+                          const DropdownMenuItem(
+                            value: '',
+                            child: Text('全部账户'),
                           ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  a.name,
+                          ...ledger.accounts.map(
+                            (a) => DropdownMenuItem(
+                              value: a.id,
+                              child: Text(a.name),
+                            ),
+                          ),
+                        ],
+                        onChanged: (v) =>
+                            setState(() => accountFilter = v ?? ''),
+                      ),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String>(
+                        key: ValueKey('bill-category-$categoryFilter'),
+                        initialValue: effectiveCategoryFilter,
+                        decoration: const InputDecoration(labelText: '分类筛选'),
+                        items: [
+                          const DropdownMenuItem(
+                            value: '',
+                            child: Text('全部分类'),
+                          ),
+                          ...ledger
+                              .categoriesFor(false)
+                              .map(
+                                (v) => DropdownMenuItem(
+                                  value: '0:$v',
+                                  child: Text('支出 · $v'),
+                                ),
+                              ),
+                          ...ledger
+                              .categoriesFor(true)
+                              .map(
+                                (v) => DropdownMenuItem(
+                                  value: '1:$v',
+                                  child: Text('收入 · $v'),
+                                ),
+                              ),
+                        ],
+                        onChanged: (v) =>
+                            setState(() => categoryFilter = v ?? ''),
+                      ),
+                      Row(
+                        children: [
+                          TextButton.icon(
+                            onPressed: () async {
+                              final d = await showDatePicker(
+                                context: context,
+                                initialDate: monthFilter ?? DateTime.now(),
+                                firstDate: DateTime(2000),
+                                lastDate: DateTime(2100),
+                              );
+                              if (d != null && mounted) {
+                                setState(() {
+                                  monthFilter = d;
+                                  dayFilter = null;
+                                });
+                              }
+                            },
+                            icon: const Icon(Icons.calendar_month),
+                            label: Text(
+                              monthFilter == null
+                                  ? '选择月份'
+                                  : '${monthFilter!.year} 年 ${monthFilter!.month} 月',
+                            ),
+                          ),
+                          if (monthFilter != null)
+                            TextButton(
+                              onPressed: () =>
+                                  setState(() => monthFilter = null),
+                              child: const Text('全部日期'),
+                            ),
+                        ],
+                      ),
+                      if (dayFilter != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  '${dayFilter!.year} 年 ${dayFilter!.month} 月 ${dayFilter!.day} 日',
                                   style: const TextStyle(
-                                    fontSize: 16,
                                     fontWeight: FontWeight.w700,
                                   ),
                                 ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  Account.kindLabels[a.kind] ?? '账户',
-                                  style: TextStyle(
-                                    color: Colors.blueGrey,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Text(
-                            '${currencySymbol(a.currency)} ${money(ledger.balance(a.id))}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 18,
-                              color: navy,
-                            ),
-                          ),
-                          PopupMenuButton<String>(
-                            tooltip: '账户操作',
-                            onSelected: (value) {
-                              if (value == 'edit') {
-                                addAccount(a);
-                              } else {
-                                deleteAccount(a);
-                              }
-                            },
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(value: 'edit', child: Text('编辑账户')),
-                              PopupMenuItem(
-                                value: 'delete',
-                                child: Text('删除账户'),
+                              ),
+                              TextButton(
+                                onPressed: () =>
+                                    setState(() => dayFilter = null),
+                                child: const Text('清除日期'),
                               ),
                             ],
                           ),
+                        ),
+                    ],
+                  );
+                },
+              )
+            else
+              const SizedBox.shrink(),
+            if (visitedTabs.contains(2))
+              ListView(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const PageTitle('账户', '把不同账户放在一起管理'),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton.filledTonal(
+                            onPressed: () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => WalletPage(ledger: ledger),
+                              ),
+                            ),
+                            tooltip: '打开卡包',
+                            icon: const Icon(Icons.style_outlined),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton.filledTonal(
+                            onPressed: addAccount,
+                            tooltip: '添加账户',
+                            icon: const Icon(Icons.add),
+                          ),
                         ],
                       ),
-                    ),
+                    ],
                   ),
-              ],
-            ),
-            ReportView(ledger: ledger),
+                  const SizedBox(height: 18),
+                  if (ledger.accounts.isEmpty)
+                    const EmptyState(
+                      icon: Icons.credit_card_outlined,
+                      title: '添加你的第一个账户',
+                      subtitle: '银行卡、现金或电子钱包都可以。',
+                    )
+                  else
+                    ...ledger.accounts.map(
+                      (a) => Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(22),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: beBorder),
+                        ),
+                        child: Row(
+                          children: [
+                            AccountIcon(
+                              name: a.name,
+                              pngBase64: a.iconPngBase64,
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    a.name,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    Account.kindLabels[a.kind] ?? '账户',
+                                    style: TextStyle(
+                                      color: Colors.blueGrey,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Text(
+                              '${currencySymbol(a.currency)} ${money(ledger.balance(a.id))}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 18,
+                                color: navy,
+                              ),
+                            ),
+                            PopupMenuButton<String>(
+                              tooltip: '账户操作',
+                              onSelected: (value) {
+                                if (value == 'edit') {
+                                  addAccount(a);
+                                } else {
+                                  deleteAccount(a);
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('编辑账户'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text('删除账户'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              )
+            else
+              const SizedBox.shrink(),
+            if (visitedTabs.contains(3))
+              ReportView(ledger: ledger)
+            else
+              const SizedBox.shrink(),
           ],
         ),
       ),
@@ -971,7 +1141,10 @@ class _HomeState extends State<Home> {
       ),
       bottomNavigationBar: BeNavigationBar(
         selectedIndex: tab,
-        onSelected: (n) => setState(() => tab = n),
+        onSelected: (n) => setState(() {
+          tab = n;
+          visitedTabs.add(n);
+        }),
       ),
     );
   }
@@ -1183,7 +1356,7 @@ class EntryTile extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
           subtitle: Text(
-            '$name · ${entry.date.year}/${entry.date.month.toString().padLeft(2, '0')}/${entry.date.day.toString().padLeft(2, '0')}${entry.note.isEmpty ? '' : ' · ${entry.note}'}',
+            '${entry.pending ? '待付款 · 点击标记为已付款 · ' : ''}$name · ${entry.date.year}/${entry.date.month.toString().padLeft(2, '0')}/${entry.date.day.toString().padLeft(2, '0')}${entry.note.isEmpty ? '' : ' · ${entry.note}'}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
@@ -1423,9 +1596,7 @@ class _ReportViewState extends State<ReportView> {
   int year = DateTime.now().year, month = DateTime.now().month;
   String account = '', currency = 'CNY';
   Future<void> setBudget() async {
-    final controller = TextEditingController(
-      text: money(widget.ledger.monthlyBudgetCents),
-    );
+    var budgetInput = money(widget.ledger.monthlyBudgetCents);
     final form = GlobalKey<FormState>();
     final value = await showDialog<int>(
       context: context,
@@ -1434,10 +1605,12 @@ class _ReportViewState extends State<ReportView> {
         content: Form(
           key: form,
           child: TextFormField(
-            controller: controller,
+            initialValue: budgetInput,
+            onChanged: (value) => budgetInput = value,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: const InputDecoration(labelText: '预算金额（元，0 为关闭）'),
-            validator: (v) => parseAmount(v ?? '') == null ? '请输入有效金额' : null,
+            validator: (v) =>
+                parseBudgetAmount(v ?? '') == null ? '请输入有效金额' : null,
           ),
         ),
         actions: [
@@ -1448,7 +1621,7 @@ class _ReportViewState extends State<ReportView> {
           FilledButton(
             onPressed: () {
               if (form.currentState!.validate()) {
-                Navigator.pop(c, parseAmount(controller.text));
+                Navigator.pop(c, parseBudgetAmount(budgetInput));
               }
             },
             child: const Text('保存'),
@@ -1456,7 +1629,6 @@ class _ReportViewState extends State<ReportView> {
         ],
       ),
     );
-    controller.dispose();
     if (value != null) {
       try {
         await widget.ledger.setMonthlyBudget(value);
@@ -1934,7 +2106,7 @@ class _RecurringPageState extends State<RecurringPage> {
     body: ListView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
       children: [
-        const Text('按月设置，打开应用后手动生成到期账单。不会发送系统通知。'),
+        const Text('打开应用时自动生成到期账单。生成后在账单中点击“标记为已付款”。'),
         const SizedBox(height: 10),
         FilledButton.tonal(
           onPressed: widget.ledger.recurring.isEmpty ? null : apply,
@@ -1944,7 +2116,7 @@ class _RecurringPageState extends State<RecurringPage> {
           const EmptyState(
             icon: Icons.repeat,
             title: '还没有周期规则',
-            subtitle: '可以添加每月固定收入或支出。',
+            subtitle: '可以添加每周、每月、每季度或每年的固定收支。',
           )
         else
           ...widget.ledger.recurring.map((r) {
@@ -1958,11 +2130,35 @@ class _RecurringPageState extends State<RecurringPage> {
                 title: Text(
                   '${r.category} · ${r.income ? '收入' : '支出'} ${currencySymbol(a.currency)}${money(r.cents)}',
                 ),
-                subtitle: Text('${a.name} · 每月 ${r.day} 日 · 下次 $date'),
-                trailing: IconButton(
-                  onPressed: () => remove(r),
-                  tooltip: '删除规则',
-                  icon: const Icon(Icons.delete_outline),
+                subtitle: Text(
+                  '${a.name} · ${const {'weekly': '每周', 'monthly': '每月', 'quarterly': '每季度', 'yearly': '每年'}[r.frequency]} · 下次 $date${r.endDate == null ? '' : ' · 截止 ${r.endDate!.year}/${r.endDate!.month}/${r.endDate!.day}'}${r.note.isEmpty ? '' : ' · ${r.note}'}',
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Switch(
+                      value: r.enabled,
+                      onChanged: (value) async {
+                        try {
+                          await widget.ledger.setRecurringEnabled(r.id, value);
+                          if (value) {
+                            await widget.ledger.applyRecurring(DateTime.now());
+                          }
+                        } catch (_) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('切换失败，请重试')),
+                            );
+                          }
+                        }
+                      },
+                    ),
+                    IconButton(
+                      onPressed: () => remove(r),
+                      tooltip: '删除规则',
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                  ],
                 ),
               ),
             );
@@ -1985,13 +2181,17 @@ class _RecurringFormState extends State<RecurringForm> {
       category = TextEditingController(text: '其他支出'),
       note = TextEditingController();
   late String account;
-  bool income = false, saving = false;
+  bool income = false, saving = false, enabled = true;
+  String frequency = 'monthly';
+  int day = DateTime.now().day;
   DateTime start = DateTime.now();
+  DateTime? end;
   @override
   void initState() {
     super.initState();
     account = widget.ledger.accounts.first.id;
     start = DateTime(start.year, start.month, start.day);
+    day = start.day;
   }
 
   @override
@@ -2070,6 +2270,45 @@ class _RecurringFormState extends State<RecurringForm> {
               decoration: const InputDecoration(labelText: '分类'),
               validator: (v) => v == null || v.trim().isEmpty ? '请输入分类' : null,
             ),
+            Wrap(
+              spacing: 6,
+              children:
+                  (income
+                          ? const ['薪水', '生活费', '副业收入', '投资汇报', '其他收入']
+                          : const ['订阅', 'AI/软件', '固定生活支出', '其他费用'])
+                      .map(
+                        (label) => ActionChip(
+                          label: Text(label),
+                          onPressed: () =>
+                              setState(() => category.text = label),
+                        ),
+                      )
+                      .toList(),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: frequency,
+              decoration: const InputDecoration(labelText: '频率'),
+              items: const [
+                DropdownMenuItem(value: 'weekly', child: Text('每周')),
+                DropdownMenuItem(value: 'monthly', child: Text('每月')),
+                DropdownMenuItem(value: 'quarterly', child: Text('每季度')),
+                DropdownMenuItem(value: 'yearly', child: Text('每年')),
+              ],
+              onChanged: (value) => setState(() => frequency = value!),
+            ),
+            if (frequency != 'weekly') ...[
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: day,
+                decoration: const InputDecoration(labelText: '发生日（短月取月末）'),
+                items: [
+                  for (var value = 1; value <= 31; value++)
+                    DropdownMenuItem(value: value, child: Text('$value 日')),
+                ],
+                onChanged: (value) => setState(() => day = value!),
+              ),
+            ],
             const SizedBox(height: 12),
             TextFormField(
               controller: note,
@@ -2078,9 +2317,9 @@ class _RecurringFormState extends State<RecurringForm> {
             ),
             ListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('首次日期'),
+              title: const Text('开始日期'),
               subtitle: Text(
-                '${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')} · 每月 ${start.day} 日，短月按月末',
+                '${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}',
               ),
               trailing: const Icon(Icons.calendar_today_outlined),
               onTap: () async {
@@ -2093,11 +2332,50 @@ class _RecurringFormState extends State<RecurringForm> {
                 if (d != null && mounted) setState(() => start = d);
               },
             ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('结束日期（可选）'),
+              subtitle: Text(
+                end == null
+                    ? '不设结束日期'
+                    : '${end!.year}-${end!.month}-${end!.day}',
+              ),
+              trailing: end == null
+                  ? const Icon(Icons.calendar_today_outlined)
+                  : IconButton(
+                      tooltip: '清除结束日期',
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() => end = null),
+                    ),
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: end != null && !end!.isBefore(start)
+                      ? end!
+                      : start,
+                  firstDate: start,
+                  lastDate: DateTime(2100),
+                );
+                if (picked != null && mounted) setState(() => end = picked);
+              },
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('启用'),
+              value: enabled,
+              onChanged: (value) => setState(() => enabled = value),
+            ),
             FilledButton(
               onPressed: saving
                   ? null
                   : () async {
                       if (!form.currentState!.validate()) return;
+                      if (end != null && end!.isBefore(start)) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('结束日期不能早于开始日期')),
+                        );
+                        return;
+                      }
                       setState(() => saving = true);
                       try {
                         await widget.ledger.addRecurring(
@@ -2108,8 +2386,42 @@ class _RecurringFormState extends State<RecurringForm> {
                             income: income,
                             category: category.text.trim(),
                             note: note.text.trim(),
-                            day: start.day,
-                            nextDate: start,
+                            day: frequency == 'weekly' ? start.day : day,
+                            nextDate: frequency == 'weekly'
+                                ? start
+                                : () {
+                                    var candidate = DateTime(
+                                      start.year,
+                                      start.month,
+                                      day.clamp(
+                                        1,
+                                        DateTime(
+                                          start.year,
+                                          start.month + 1,
+                                          0,
+                                        ).day,
+                                      ),
+                                    );
+                                    if (candidate.isBefore(start)) {
+                                      candidate = DateTime(
+                                        start.year,
+                                        start.month + 1,
+                                        day.clamp(
+                                          1,
+                                          DateTime(
+                                            start.year,
+                                            start.month + 2,
+                                            0,
+                                          ).day,
+                                        ),
+                                      );
+                                    }
+                                    return candidate;
+                                  }(),
+                            startDate: start,
+                            endDate: end,
+                            enabled: enabled,
+                            frequency: frequency,
                           ),
                         );
                         if (context.mounted) Navigator.pop(context);
@@ -2274,6 +2586,52 @@ class _CategoriesPageState extends State<CategoriesPage> {
     }
   }
 
+  Future<void> deleteCategory(String name, bool income) async {
+    final fallback = Ledger.categoryFallbackFor(name, income: income);
+    final count =
+        widget.ledger.entries
+            .where(
+              (e) =>
+                  e.transferId.isEmpty &&
+                  e.income == income &&
+                  e.category == name,
+            )
+            .length +
+        widget.ledger.recurring
+            .where((r) => r.income == income && r.category == name)
+            .length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('删除“$name”？'),
+        content: Text(
+          count == 0
+              ? '此分类标签将从分类管理中移除。'
+              : '已有 $count 条账单或周期规则使用此分类，删除后将归入“$fallback”。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.ledger.deleteCategory(name, income: income);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('删除分类失败，请重试')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2296,15 +2654,13 @@ class _CategoriesPageState extends State<CategoriesPage> {
             ...widget.ledger
                 .categoriesFor(income)
                 .map(
-                  (name) => Card(
-                    child: ListTile(
-                      title: Text(name),
-                      trailing: IconButton(
-                        tooltip: '重命名分类',
-                        icon: const Icon(Icons.edit_outlined),
-                        onPressed: () => rename(name, income),
-                      ),
+                  (name) => CategorySwipeTile(
+                    key: ValueKey(
+                      'category-${income ? 'income' : 'expense'}-$name',
                     ),
+                    name: name,
+                    onEdit: () => rename(name, income),
+                    onDelete: () => deleteCategory(name, income),
                   ),
                 ),
           ],
@@ -2613,8 +2969,12 @@ class _RatesPageState extends State<RatesPage> {
       return;
     }
     if (!mounted) return;
-    final id = TextEditingController(text: savedId),
-        key = TextEditingController(text: savedKey);
+    final id = TextEditingController(
+          text: savedId.isEmpty ? '88888888' : savedId,
+        ),
+        key = TextEditingController(
+          text: savedKey.isEmpty ? '88888888' : savedKey,
+        );
     var remember = savedId.isNotEmpty && savedKey.isNotEmpty;
     final credentials =
         await showDialog<({String id, String key, bool remember})>(

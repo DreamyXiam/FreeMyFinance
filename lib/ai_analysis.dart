@@ -55,8 +55,9 @@ class AiAnalysisService {
             },
             body: jsonEncode({
               'model': 'deepseek-flash',
+              'thinking': {'type': 'disabled'},
               'stream': false,
-              'max_tokens': 900,
+              'max_tokens': 1600,
               'messages': [
                 {
                   'role': 'system',
@@ -90,9 +91,15 @@ class AiAnalysisService {
           (choices.first as Map<String, dynamic>)['message']['content']
               as String?;
       if (content == null || content.trim().isEmpty) {
-        throw const FormatException();
+        final reason = (choices.first as Map<String, dynamic>)['finish_reason'];
+        if (reason == 'length') {
+          throw const AiAnalysisException('AI 输出超过长度限制，请缩短提示词后重试');
+        }
+        throw const AiAnalysisException('DeepSeek 返回了空内容，请稍后重试');
       }
       return content.trim();
+    } on AiAnalysisException {
+      rethrow;
     } catch (_) {
       throw const AiAnalysisException('DeepSeek 返回内容为空或格式不正确');
     }

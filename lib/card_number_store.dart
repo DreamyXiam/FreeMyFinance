@@ -69,6 +69,7 @@ class AccountWriter {
       name: a.name,
       openingCents: a.openingCents,
       imageUrl: a.imageUrl,
+      iconPngBase64: a.iconPngBase64,
       currency: a.currency,
       kind: a.kind,
       lastFour: a.lastFour,

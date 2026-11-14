@@ -29,6 +29,7 @@ void main() {
     expect(rows[1][2]!.value.toString(), 'HKD');
     expect(rows[1][5]!.value, isA<DoubleCellValue>());
     expect(rows[1][6]!.value, isA<TextCellValue>());
+    expect(rows[1][7]!.value.toString(), contains('已付款'));
     final archive = ZipDecoder().decodeBytes(data);
     final xml = utf8.decode(
       archive.files

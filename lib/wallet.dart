@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'be_ui.dart';
 import 'ledger.dart';
+import 'account_icon.dart';
 
 const _bg = beBackground, _ink = beInk;
 String _symbol(String c) => switch (c) {
@@ -552,20 +553,32 @@ class WalletCard extends StatelessWidget {
                       style: TextStyle(color: Colors.white70, fontSize: 13),
                     ),
                     const SizedBox(height: 4),
-                    FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        '${_symbol(account.currency)} ${_money(balance)}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 28,
-                          fontWeight: FontWeight.w800,
-                          shadows: [
-                            Shadow(color: Colors.black54, blurRadius: 5),
-                          ],
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              '${_symbol(account.currency)} ${_money(balance)}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 28,
+                                fontWeight: FontWeight.w800,
+                                shadows: [
+                                  Shadow(color: Colors.black54, blurRadius: 5),
+                                ],
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 12),
+                        AccountIcon(
+                          name: account.name,
+                          pngBase64: account.iconPngBase64,
+                          size: 34,
+                        ),
+                      ],
                     ),
                   ],
                 ),

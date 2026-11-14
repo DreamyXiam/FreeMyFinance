@@ -9,6 +9,8 @@ import 'card_catalog.dart';
 import 'be_ui.dart';
 import 'ledger.dart';
 import 'wallet.dart';
+import 'account_icon.dart';
+import 'account_icon_picker.dart';
 
 int? _parseAmount(String value, {bool signed = false}) {
   final s = value.trim();
@@ -176,7 +178,8 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
   late String _currency;
   int? _statementDay, _paymentDay;
   String _previewUrl = '';
-  bool _saving = false, _include = true, _showNote = true, _obscureCard = true;
+  String _iconPng = '';
+  bool _saving = false, _include = true, _showNote = true;
   CardNumberStore get _cardStore => widget.cardStore ?? SecureCardNumberStore();
   bool get _isCard => widget.kind == 'debit' || widget.kind == 'credit';
   bool get _isCredit => widget.kind == 'credit';
@@ -196,6 +199,7 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
       _opening.text = _amount(a.openingCents);
       _image.text = a.imageUrl;
       _previewUrl = a.imageUrl;
+      _iconPng = a.iconPngBase64;
       _lastFour.text = a.lastFour;
       _note.text = a.note;
       _instrument.text = a.instrument;
@@ -239,6 +243,7 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
       openingCents: _parseAmount(_opening.text, signed: true)!,
       currency: _currency,
       imageUrl: _image.text.trim(),
+      iconPngBase64: _iconPng,
       kind: widget.kind,
       lastFour: _isCard ? _lastFour.text.trim() : '',
       cardRef: widget.account?.cardRef ?? '',
@@ -397,6 +402,7 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
       openingCents: opening,
       currency: _currency,
       imageUrl: _previewUrl,
+      iconPngBase64: _iconPng,
       kind: widget.kind,
       lastFour: _lastFour.text.trim(),
       expiry: _expiry.text.trim(),
@@ -445,6 +451,33 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
                   balance: opening + adjustment,
                 ),
               ),
+              _section('账户图标', [
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: AccountIcon(
+                    name: _name.text.trim().isEmpty
+                        ? Account.kindLabels[widget.kind]!
+                        : _name.text.trim(),
+                    pngBase64: _iconPng,
+                    size: 48,
+                  ),
+                  title: const Text('账户图标'),
+                  subtitle: const Text('本机应用图标、本地图片或账户名首字'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    final selected = await showAccountIconPicker(
+                      context,
+                      accountName: _name.text.trim().isEmpty
+                          ? Account.kindLabels[widget.kind]!
+                          : _name.text.trim(),
+                      currentIcon: _iconPng,
+                    );
+                    if (selected != null && mounted) {
+                      setState(() => _iconPng = selected);
+                    }
+                  },
+                ),
+              ]),
               _section('卡面管理', [
                 if (_isCard) ...[
                   OutlinedButton.icon(
@@ -561,7 +594,7 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
                     controller: _cardNumber,
                     keyboardType: TextInputType.number,
                     inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    obscureText: _obscureCard,
+                    obscureText: true,
                     autocorrect: false,
                     enableSuggestions: false,
                     enableIMEPersonalizedLearning: false,
@@ -569,16 +602,6 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
                       labelText: widget.account?.cardRef.isNotEmpty == true
                           ? '完整卡号（留空则保持不变）'
                           : '完整卡号（选填）',
-                      suffixIcon: IconButton(
-                        tooltip: _obscureCard ? '显示已输入的卡号' : '隐藏已输入的卡号',
-                        icon: Icon(
-                          _obscureCard
-                              ? Icons.visibility_outlined
-                              : Icons.visibility_off_outlined,
-                        ),
-                        onPressed: () =>
-                            setState(() => _obscureCard = !_obscureCard),
-                      ),
                     ),
                     onChanged: (value) {
                       if (value.length >= 4) {

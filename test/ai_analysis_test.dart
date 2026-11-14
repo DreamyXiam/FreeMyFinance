@@ -48,6 +48,7 @@ void main() {
     );
     expect(answer, '支出主要在餐饮。');
     expect(sent['model'], 'deepseek-flash');
+    expect(sent['thinking'], {'type': 'disabled'});
     expect(jsonEncode(sent), contains('请分析这份月度账单'));
     expect(jsonEncode(sent), isNot(contains('secret')));
     expect(jsonEncode(sent), isNot(contains('cardRef')));

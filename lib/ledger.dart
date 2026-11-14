@@ -5,6 +5,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ledger_store.dart';
 
+bool _validIconPng(String value) {
+  if (value.isEmpty) return true;
+  try {
+    final bytes = base64Decode(value);
+    const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+    return bytes.length >= 8 &&
+        List.generate(8, (i) => bytes[i] == signature[i]).every((v) => v);
+  } catch (_) {
+    return false;
+  }
+}
+
 class Account {
   static const supportedCurrencies = ['CNY', 'HKD', 'USD', 'EUR', 'GBP'];
   static const kindLabels = {
@@ -23,6 +35,7 @@ class Account {
   final String id,
       name,
       imageUrl,
+      iconPngBase64,
       currency,
       kind,
       lastFour,
@@ -38,6 +51,7 @@ class Account {
     required this.name,
     required this.openingCents,
     this.imageUrl = '',
+    this.iconPngBase64 = '',
     this.currency = 'CNY',
     this.kind = 'other',
     this.lastFour = '',
@@ -56,6 +70,7 @@ class Account {
     'name': name,
     'openingCents': openingCents,
     'imageUrl': imageUrl,
+    'iconPngBase64': iconPngBase64,
     'currency': currency,
     'kind': kind,
     'lastFour': lastFour,
@@ -74,6 +89,7 @@ class Account {
     name: j['name'],
     openingCents: j['openingCents'],
     imageUrl: j['imageUrl'] ?? '',
+    iconPngBase64: j['iconPngBase64'] ?? '',
     currency: j['currency'] ?? 'CNY',
     kind: j['kind'] ?? 'other',
     lastFour: j['lastFour'] ?? '',
@@ -93,6 +109,7 @@ class Entry {
   final String id, accountId, category, note, transferId;
   final int cents;
   final bool income;
+  final bool pending;
   final DateTime date;
   Entry({
     required this.id,
@@ -103,6 +120,7 @@ class Entry {
     required this.note,
     required this.date,
     this.transferId = '',
+    this.pending = false,
   });
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -112,6 +130,7 @@ class Entry {
     'category': category,
     'note': note,
     'transferId': transferId,
+    'pending': pending,
     'date': date.toIso8601String(),
   };
   factory Entry.fromJson(Map<String, dynamic> j) => Entry(
@@ -122,6 +141,7 @@ class Entry {
     category: j['category'],
     note: j['note'],
     transferId: j['transferId'] ?? '',
+    pending: j['pending'] ?? false,
     date: DateTime.parse(j['date']),
   );
 }
@@ -131,6 +151,10 @@ class Recurring {
   final int cents, day;
   final bool income;
   final DateTime nextDate;
+  final DateTime startDate;
+  final DateTime? endDate;
+  final String frequency;
+  final bool enabled;
   Recurring({
     required this.id,
     required this.accountId,
@@ -140,7 +164,11 @@ class Recurring {
     required this.note,
     required this.day,
     required this.nextDate,
-  });
+    DateTime? startDate,
+    this.endDate,
+    this.frequency = 'monthly',
+    this.enabled = true,
+  }) : startDate = startDate ?? nextDate;
   Map<String, dynamic> toJson() => {
     'id': id,
     'accountId': accountId,
@@ -150,6 +178,10 @@ class Recurring {
     'note': note,
     'day': day,
     'nextDate': nextDate.toIso8601String(),
+    'startDate': startDate.toIso8601String(),
+    'endDate': endDate?.toIso8601String(),
+    'frequency': frequency,
+    'enabled': enabled,
   };
   factory Recurring.fromJson(Map<String, dynamic> j) => Recurring(
     id: j['id'],
@@ -160,21 +192,40 @@ class Recurring {
     note: j['note'],
     day: j['day'],
     nextDate: DateTime.parse(j['nextDate']),
+    startDate: j['startDate'] == null ? null : DateTime.parse(j['startDate']),
+    endDate: j['endDate'] == null ? null : DateTime.parse(j['endDate']),
+    frequency: j['frequency'] ?? 'monthly',
+    enabled: j['enabled'] ?? true,
   );
+  Recurring copyWith({DateTime? nextDate, bool? enabled, String? category}) =>
+      Recurring(
+        id: id,
+        accountId: accountId,
+        cents: cents,
+        income: income,
+        category: category ?? this.category,
+        note: note,
+        day: day,
+        nextDate: nextDate ?? this.nextDate,
+        startDate: startDate,
+        endDate: endDate,
+        frequency: frequency,
+        enabled: enabled ?? this.enabled,
+      );
   Recurring advance() {
-    final y = nextDate.month == 12 ? nextDate.year + 1 : nextDate.year;
-    final m = nextDate.month == 12 ? 1 : nextDate.month + 1;
+    if (frequency == 'weekly') {
+      return copyWith(nextDate: nextDate.add(const Duration(days: 7)));
+    }
+    final months = frequency == 'yearly'
+        ? 12
+        : frequency == 'quarterly'
+        ? 3
+        : 1;
+    final nextMonth = DateTime(nextDate.year, nextDate.month + months);
+    final y = nextMonth.year;
+    final m = nextMonth.month;
     final last = DateTime(y, m + 1, 0).day;
-    return Recurring(
-      id: id,
-      accountId: accountId,
-      cents: cents,
-      income: income,
-      category: category,
-      note: note,
-      day: day,
-      nextDate: DateTime(y, m, day < last ? day : last),
-    );
+    return copyWith(nextDate: DateTime(y, m, day < last ? day : last));
   }
 }
 
@@ -460,7 +511,7 @@ class Ledger extends ChangeNotifier {
 
   String exportBackup() => jsonEncode({
     'format': 'FreeMyFinance',
-    'version': 11,
+    'version': 13,
     'expenseCategories': expenseCategories,
     'incomeCategories': incomeCategories,
     'aiPrompt': aiPrompt,
@@ -490,7 +541,9 @@ class Ledger extends ChangeNotifier {
               data['version'] != 8 &&
               data['version'] != 9 &&
               data['version'] != 10 &&
-              data['version'] != 11) ||
+              data['version'] != 11 &&
+              data['version'] != 12 &&
+              data['version'] != 13) ||
           data['accounts'] is! List ||
           data['entries'] is! List) {
         throw const FormatException('无效的备份格式');
@@ -538,6 +591,10 @@ class Ledger extends ChangeNotifier {
             (item['name'] as String).trim().isEmpty ||
             item['openingCents'] is! int ||
             (item['imageUrl'] != null && item['imageUrl'] is! String) ||
+            (item['iconPngBase64'] != null &&
+                (item['iconPngBase64'] is! String ||
+                    (item['iconPngBase64'] as String).length > 200000 ||
+                    !_validIconPng(item['iconPngBase64'] as String))) ||
             (item['currency'] != null &&
                 !Account.supportedCurrencies.contains(item['currency'])) ||
             (item['kind'] != null &&
@@ -599,7 +656,17 @@ class Ledger extends ChangeNotifier {
             item['day'] is! int ||
             (item['day'] as int) < 1 ||
             (item['day'] as int) > 31 ||
-            item['nextDate'] is! String) {
+            item['nextDate'] is! String ||
+            (item['frequency'] != null &&
+                !const [
+                  'weekly',
+                  'monthly',
+                  'quarterly',
+                  'yearly',
+                ].contains(item['frequency'])) ||
+            (item['enabled'] != null && item['enabled'] is! bool) ||
+            (item['startDate'] != null && item['startDate'] is! String) ||
+            (item['endDate'] != null && item['endDate'] is! String)) {
           throw const FormatException('周期账单无效');
         }
         final rule = Recurring.fromJson(item);
@@ -608,7 +675,10 @@ class Ledger extends ChangeNotifier {
           rule.nextDate.month + 1,
           0,
         ).day;
-        if (rule.nextDate.day != (rule.day < last ? rule.day : last)) {
+        if ((rule.frequency != 'weekly' &&
+                rule.nextDate.day != (rule.day < last ? rule.day : last)) ||
+            (rule.endDate != null && rule.endDate!.isBefore(rule.startDate)) ||
+            rule.nextDate.isBefore(rule.startDate)) {
           throw const FormatException('周期日期无效');
         }
         newRules.add(rule);
@@ -624,6 +694,7 @@ class Ledger extends ChangeNotifier {
             item['cents'] is! int ||
             (item['cents'] as int) <= 0 ||
             item['income'] is! bool ||
+            (item['pending'] != null && item['pending'] is! bool) ||
             item['category'] is! String ||
             (item['category'] as String).trim().isEmpty ||
             item['note'] is! String ||
@@ -783,6 +854,59 @@ class Ledger extends ChangeNotifier {
     );
   }
 
+  Future<void> deleteCategory(String value, {required bool income}) async {
+    final catalog = income ? incomeCategories : expenseCategories;
+    final fallback = categoryFallbackFor(value, income: income);
+    if (!catalog.contains(value)) throw StateError('分类不存在');
+    final reassigned =
+        entries.any(
+          (e) =>
+              e.transferId.isEmpty && e.income == income && e.category == value,
+        ) ||
+        recurring.any((r) => r.income == income && r.category == value);
+    final nextEntries = [
+      for (final entry in entries)
+        if (entry.transferId.isEmpty &&
+            entry.income == income &&
+            entry.category == value)
+          Entry(
+            id: entry.id,
+            accountId: entry.accountId,
+            cents: entry.cents,
+            income: entry.income,
+            category: fallback,
+            note: entry.note,
+            date: entry.date,
+            pending: entry.pending,
+          )
+        else
+          entry,
+    ];
+    final nextRules = [
+      for (final rule in recurring)
+        if (rule.income == income && rule.category == value)
+          rule.copyWith(category: fallback)
+        else
+          rule,
+    ];
+    final nextCatalog = <String>{
+      ...catalog.where((name) => name != value),
+      if (reassigned) fallback,
+    }.toList();
+    await _commit(
+      [...accounts],
+      nextEntries,
+      rules: nextRules,
+      expenses: income ? null : nextCatalog,
+      incomes: income ? nextCatalog : null,
+    );
+  }
+
+  static String categoryFallbackFor(String value, {required bool income}) {
+    final other = income ? '其他收入' : '其他支出';
+    return value == other ? (income ? '未分类收入' : '未分类支出') : other;
+  }
+
   Future<void> renameCategory(
     String oldName,
     String newName, {
@@ -806,6 +930,7 @@ class Ledger extends ChangeNotifier {
                   category: name,
                   note: e.note,
                   date: e.date,
+                  pending: e.pending,
                 )
               : e,
         )
@@ -813,16 +938,7 @@ class Ledger extends ChangeNotifier {
     final updatedRules = recurring
         .map(
           (r) => r.category == oldName && (income == null || r.income == income)
-              ? Recurring(
-                  id: r.id,
-                  accountId: r.accountId,
-                  cents: r.cents,
-                  income: r.income,
-                  category: name,
-                  note: r.note,
-                  day: r.day,
-                  nextDate: r.nextDate,
-                )
+              ? r.copyWith(category: name)
               : r,
         )
         .toList();
@@ -852,11 +968,20 @@ class Ledger extends ChangeNotifier {
         rule.cents <= 0 ||
         rule.day < 1 ||
         rule.day > 31 ||
+        !const [
+          'weekly',
+          'monthly',
+          'quarterly',
+          'yearly',
+        ].contains(rule.frequency) ||
+        (rule.endDate != null && rule.endDate!.isBefore(rule.startDate)) ||
+        rule.nextDate.isBefore(rule.startDate) ||
         rule.category.trim().isEmpty) {
       throw StateError('周期账单无效');
     }
     final last = DateTime(rule.nextDate.year, rule.nextDate.month + 1, 0).day;
-    if (rule.nextDate.day != (rule.day < last ? rule.day : last)) {
+    if (rule.frequency != 'weekly' &&
+        rule.nextDate.day != (rule.day < last ? rule.day : last)) {
       throw StateError('周期日期无效');
     }
     await _commit([...accounts], [...entries], rules: [...recurring, rule]);
@@ -867,19 +992,52 @@ class Ledger extends ChangeNotifier {
     [...entries],
     rules: recurring.where((r) => r.id != id).toList(),
   );
+  Future<void> setRecurringEnabled(String id, bool enabled) async {
+    if (!recurring.any((rule) => rule.id == id)) throw StateError('周期规则不存在');
+    await _commit(
+      [...accounts],
+      [...entries],
+      rules: [
+        for (final rule in recurring)
+          if (rule.id == id) rule.copyWith(enabled: enabled) else rule,
+      ],
+    );
+  }
+
+  Future<void> markPaid(String id) async {
+    final matches = entries.where((entry) => entry.id == id && entry.pending);
+    if (matches.isEmpty) throw StateError('待付款账单不存在');
+    await _commit(
+      [...accounts],
+      [
+        for (final entry in entries)
+          if (entry.id == id)
+            Entry.fromJson({...entry.toJson(), 'pending': false})
+          else
+            entry,
+      ],
+    );
+  }
+
   Future<int> applyRecurring(DateTime today) async {
     final cutoff = DateTime(today.year, today.month, today.day);
     final nextEntries = [...entries];
+    final existingIds = entries.map((entry) => entry.id).toSet();
     final nextRules = <Recurring>[];
     var count = 0;
     for (final initial in recurring) {
       var rule = initial;
+      if (!rule.enabled) {
+        nextRules.add(rule);
+        continue;
+      }
       var iterations = 0;
-      while (!rule.nextDate.isAfter(cutoff)) {
-        if (++iterations > 120) throw StateError('单个周期规则最多补记 120 个月');
+      while (!rule.nextDate.isAfter(cutoff) &&
+          (rule.endDate == null || !rule.nextDate.isAfter(rule.endDate!))) {
+        if (++iterations > 1500) throw StateError('单个周期规则补记超过 1500 次');
         final id =
-            'recurring-${rule.id}-${rule.nextDate.year}-${rule.nextDate.month}';
-        if (!nextEntries.any((e) => e.id == id)) {
+            'recurring-${rule.id}-${rule.nextDate.year}-${rule.nextDate.month}-${rule.nextDate.day}';
+        if (existingIds.add(id)) {
           nextEntries.add(
             Entry(
               id: id,
@@ -889,6 +1047,7 @@ class Ledger extends ChangeNotifier {
               category: rule.category,
               note: rule.note,
               date: rule.nextDate,
+              pending: true,
             ),
           );
           count++;
@@ -909,6 +1068,8 @@ class Ledger extends ChangeNotifier {
   void _validateAccount(Account a) {
     if (!Account.kindLabels.containsKey(a.kind) ||
         !Account.supportedCurrencies.contains(a.currency) ||
+        a.iconPngBase64.length > 200000 ||
+        !_validIconPng(a.iconPngBase64) ||
         (a.lastFour.isNotEmpty && !RegExp(r'^\d{4}$').hasMatch(a.lastFour)) ||
         (a.cardRef.isNotEmpty &&
             !RegExp(r'^[a-f0-9]{32}$').hasMatch(a.cardRef)) ||
@@ -1054,12 +1215,13 @@ class Ledger extends ChangeNotifier {
   int balance(String id) =>
       accounts.firstWhere((a) => a.id == id).openingCents +
       entries
-          .where((e) => e.accountId == id)
+          .where((e) => e.accountId == id && !e.pending)
           .fold(0, (int s, e) => s + (e.income ? e.cents : -e.cents));
   int _sum(DateTime month, bool income, String currency) => entries
       .where(
         (e) =>
             e.transferId.isEmpty &&
+            !e.pending &&
             accounts.any(
               (a) => a.id == e.accountId && a.currency == currency,
             ) &&

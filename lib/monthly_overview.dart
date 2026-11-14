@@ -7,11 +7,13 @@ class MonthlyOverview extends StatefulWidget {
   final Ledger ledger;
   final String currency;
   final DateTime today;
+  final ValueChanged<DateTime>? onDaySelected;
   const MonthlyOverview({
     super.key,
     required this.ledger,
     required this.currency,
     required this.today,
+    this.onDaySelected,
   });
 
   @override
@@ -39,6 +41,7 @@ class _MonthlyOverviewState extends State<MonthlyOverview> {
     final incomes = <int, int>{};
     final expenses = <int, int>{};
     for (final entry in widget.ledger.entries) {
+      if (entry.pending) continue;
       if (entry.transferId.isNotEmpty ||
           accountCurrencies[entry.accountId] != widget.currency ||
           entry.date.year != visibleMonth.year ||
@@ -141,34 +144,45 @@ class _MonthlyOverviewState extends State<MonthlyOverview> {
                     date.year == widget.today.year &&
                     date.month == widget.today.month &&
                     date.day == widget.today.day;
-                return Column(
-                  children: [
-                    Container(
-                      width: 29,
-                      height: 27,
-                      decoration: BoxDecoration(
-                        color: today ? beBlue : Colors.transparent,
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        today ? '今' : '${date.day}',
-                        style: TextStyle(
-                          color: today
-                              ? Colors.white
-                              : current
-                              ? beInk
-                              : beMuted.withValues(alpha: 0.45),
-                          fontWeight: today ? FontWeight.w800 : FontWeight.w600,
-                          fontSize: 13,
+                return InkWell(
+                  key: Key(
+                    'calendar-day-${date.year}-${date.month}-${date.day}',
+                  ),
+                  onTap: widget.onDaySelected == null
+                      ? null
+                      : () => widget.onDaySelected!(date),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Column(
+                    children: [
+                      Container(
+                        width: 29,
+                        height: 27,
+                        decoration: BoxDecoration(
+                          color: today ? beBlue : Colors.transparent,
+                          borderRadius: BorderRadius.circular(15),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          today ? '今' : '${date.day}',
+                          style: TextStyle(
+                            color: today
+                                ? Colors.white
+                                : current
+                                ? beInk
+                                : beMuted.withValues(alpha: 0.45),
+                            fontWeight: today
+                                ? FontWeight.w800
+                                : FontWeight.w600,
+                            fontSize: 13,
+                          ),
                         ),
                       ),
-                    ),
-                    if (current) ...[
-                      dayAmount(incomes[date.day], const Color(0xFF159F73)),
-                      dayAmount(expenses[date.day], const Color(0xFFEA795D)),
+                      if (current) ...[
+                        dayAmount(incomes[date.day], const Color(0xFF159F73)),
+                        dayAmount(expenses[date.day], const Color(0xFFEA795D)),
+                      ],
                     ],
-                  ],
+                  ),
                 );
               },
             ),

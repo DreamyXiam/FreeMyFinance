@@ -17,6 +17,7 @@ class Report {
       if ((allowedAccountIds != null &&
               !allowedAccountIds.contains(e.accountId)) ||
           e.transferId.isNotEmpty ||
+          e.pending ||
           e.date.year != year ||
           (month != null && e.date.month != month) ||
           (accountId != null && e.accountId != accountId)) {

@@ -10,7 +10,7 @@ List<int> exportXlsx(List<Account> accounts, List<Entry> entries) {
   book.rename('Sheet1', '账单');
   final sheet = book['账单'];
   final names = {for (final a in accounts) a.id: a};
-  final headers = ['日期', '账户', '币种', '类型', '分类', '金额', '备注'];
+  final headers = ['日期', '账户', '币种', '类型', '分类', '金额', '备注', '状态'];
   sheet.appendRow(headers.map((v) => TextCellValue(v)).toList());
   for (var i = 0; i < headers.length; i++) {
     sheet
@@ -18,7 +18,10 @@ List<int> exportXlsx(List<Account> accounts, List<Entry> entries) {
         .cellStyle = CellStyle(
       bold: true,
     );
-    sheet.setColumnWidth(i, [15.0, 22.0, 10.0, 12.0, 18.0, 16.0, 32.0][i]);
+    sheet.setColumnWidth(
+      i,
+      [15.0, 22.0, 10.0, 12.0, 18.0, 16.0, 32.0, 12.0][i],
+    );
   }
   for (final e in entries) {
     final a = names[e.accountId];
@@ -35,6 +38,7 @@ List<int> exportXlsx(List<Account> accounts, List<Entry> entries) {
       TextCellValue(e.category),
       DoubleCellValue(e.cents / 100),
       TextCellValue(e.note),
+      TextCellValue(e.pending ? '待付款' : '已付款'),
     ]);
   }
   final bytes = book.encode();
@@ -43,7 +47,7 @@ List<int> exportXlsx(List<Account> accounts, List<Entry> entries) {
   for (final file in source.files) {
     if (file.name == 'xl/worksheets/sheet1.xml') {
       final text = utf8.decode(file.content as List<int>);
-      final filter = '<autoFilter ref="A1:G${entries.length + 1}"/>';
+      final filter = '<autoFilter ref="A1:H${entries.length + 1}"/>';
       if (!text.contains('</sheetData>')) throw StateError('Excel 表格结构无效');
       final data = utf8.encode(
         text.replaceFirst('</sheetData>', '</sheetData>$filter'),
