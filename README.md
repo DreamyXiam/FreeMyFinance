@@ -1,6 +1,6 @@
 # FreeMyFinance
 
-FreeMyFinance 是面向 Android 和 iOS 的个人记账应用，Android 正式版已发布，iOS 源码仍需在 macOS 上构建。
+FreeMyFinance 是面向 Android 和 iOS 的个人记账应用，Android 正式版已发布。
 
 ## 已实现
 
@@ -18,8 +18,6 @@ FreeMyFinance 是面向 Android 和 iOS 的个人记账应用，Android 正式�
 - 可选应用锁使用设备身份验证；应用锁不会加密本地账本。
 - 账目保存在当前设备，不需要登录；默认不加密，可选择启用设备密钥保护的本地加密（实验性，尚未完成安卓真机验证）。启用前请导出备份；卸载应用、清除数据或丢失设备密钥可能导致账本不可恢复。目前没有云同步。
 
-图片地址由使用者自行提供，仓库不包含第三方卡面；使用前请确认图片授权。尚未集成 AirCards 目录。
-
 ## 开发
 
 需要 Flutter SDK 和 Android SDK。iOS 构建需要 macOS 和 Xcode。
@@ -35,7 +33,7 @@ flutter run
 
 ## 状态
 
-Android 1.0.1 已在魅族 20 上验证覆盖安装和启动，启动图标与应用内标识均已更新。[下载最新 Android APK](https://github.com/DreamyXiam/FreeMyFinance/releases/latest)。iOS 仍需在 macOS 上构建验证。账户余额由初始余额和手工录入的账目计算，不连接银行，也不会自动同步交易。
+Android 1.0.1 已在Android16 上验证覆盖安装和启动，启动图标与应用内标识均已更新。[下载最新 Android APK](https://github.com/DreamyXiam/FreeMyFinance/releases/latest)。iOS 仍需在 macOS 上构建验证。账户余额由初始余额和手工录入的账目计算，不连接银行，也不会自动同步交易。
 
 ## 许可证
 
