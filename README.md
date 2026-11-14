@@ -35,7 +35,7 @@ flutter run
 
 ## 状态
 
-Android 1.0.1 修复启动图标引用并统一应用内标识；1.0.0 已在魅族 20 上验证安装和启动。[下载最新 Android APK](https://github.com/DreamyXiam/FreeMyFinance/releases/latest)。iOS 仍需在 macOS 上构建验证。账户余额由初始余额和手工录入的账目计算，不连接银行，也不会自动同步交易。
+Android 1.0.1 已在魅族 20 上验证覆盖安装和启动，启动图标与应用内标识均已更新。[下载最新 Android APK](https://github.com/DreamyXiam/FreeMyFinance/releases/latest)。iOS 仍需在 macOS 上构建验证。账户余额由初始余额和手工录入的账目计算，不连接银行，也不会自动同步交易。
 
 ## 许可证
 
