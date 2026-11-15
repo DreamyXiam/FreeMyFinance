@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
@@ -180,6 +182,9 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
   String _previewUrl = '';
   String _iconPng = '';
   bool _saving = false, _include = true, _showNote = true;
+  bool _iconChosenManually = false;
+  Timer? _iconMatchTimer;
+  int _iconMatchSerial = 0;
   CardNumberStore get _cardStore => widget.cardStore ?? SecureCardNumberStore();
   bool get _isCard => widget.kind == 'debit' || widget.kind == 'credit';
   bool get _isCredit => widget.kind == 'credit';
@@ -216,6 +221,7 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
 
   @override
   void dispose() {
+    _iconMatchTimer?.cancel();
     for (final c in [
       _name,
       _opening,
@@ -230,6 +236,31 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  void _matchIconForName(String value) {
+    _iconMatchTimer?.cancel();
+    final serial = ++_iconMatchSerial;
+    if (widget.account != null || _iconChosenManually || value.trim().isEmpty) {
+      return;
+    }
+    _iconMatchTimer = Timer(const Duration(milliseconds: 450), () async {
+      try {
+        final icon = await matchInstalledAccountIcon(
+          value,
+          const AndroidAppIconSource(),
+        );
+        if (mounted &&
+            serial == _iconMatchSerial &&
+            !_iconChosenManually &&
+            icon != null &&
+            icon.isNotEmpty) {
+          setState(() => _iconPng = icon);
+        }
+      } catch (_) {
+        // Installed application icons are optional on non-Android devices.
+      }
+    });
   }
 
   Future<void> _save() async {
@@ -473,7 +504,12 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
                       currentIcon: _iconPng,
                     );
                     if (selected != null && mounted) {
-                      setState(() => _iconPng = selected);
+                      _iconMatchTimer?.cancel();
+                      _iconMatchSerial++;
+                      setState(() {
+                        _iconPng = selected;
+                        _iconChosenManually = true;
+                      });
                     }
                   },
                 ),
@@ -538,7 +574,10 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
                     labelText: '账户名称',
                     hintText: '例如：招商银行',
                   ),
-                  onChanged: (_) => setState(() {}),
+                  onChanged: (value) {
+                    setState(() {});
+                    _matchIconForName(value);
+                  },
                   validator: (v) =>
                       v == null || v.trim().isEmpty ? '请输入账户名称' : null,
                 ),

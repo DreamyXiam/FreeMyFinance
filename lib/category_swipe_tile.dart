@@ -71,7 +71,7 @@ class _CategorySwipeTileState extends State<CategorySwipeTile> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        deleting ? Icons.delete_outline : Icons.arrow_back,
+                        deleting ? Icons.delete_outline : Icons.edit_outlined,
                         color: editing ? Colors.white : const Color(0xFF159F73),
                       ),
                       const SizedBox(width: 7),

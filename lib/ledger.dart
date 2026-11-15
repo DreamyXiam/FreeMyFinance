@@ -1092,6 +1092,18 @@ class Ledger extends ChangeNotifier {
     await _commit([...accounts, a], [...entries]);
   }
 
+  Future<void> moveAccount(String id, int direction) async {
+    final index = accounts.indexWhere((a) => a.id == id);
+    if (index < 0 || (direction != -1 && direction != 1)) {
+      throw StateError('账户排序参数无效');
+    }
+    final target = index + direction;
+    if (target < 0 || target >= accounts.length) return;
+    final ordered = [...accounts];
+    ordered.insert(target, ordered.removeAt(index));
+    await _commit(ordered, [...entries]);
+  }
+
   Future<void> updateAccount(Account a) async {
     _validateAccount(a);
     if (!accounts.any((x) => x.id == a.id)) throw StateError('账户不存在');

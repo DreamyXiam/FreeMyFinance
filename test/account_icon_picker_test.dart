@@ -13,6 +13,16 @@ class FakeAppIcons implements AppIconSource {
 }
 
 void main() {
+  test(
+    'name matching returns an installed icon and ignores unmatched names',
+    () async {
+      expect(
+        await matchInstalledAccountIcon('支付宝账户', FakeAppIcons()),
+        'icon-from-com.example.alipay',
+      );
+      expect(await matchInstalledAccountIcon('不存在', FakeAppIcons()), isNull);
+    },
+  );
   testWidgets(
     'quick match picks an installed app icon, while initials stay available',
     (tester) async {

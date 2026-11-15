@@ -28,6 +28,7 @@ import 'category_swipe_tile.dart';
 import 'account_icon.dart';
 import 'lock_controller.dart';
 import 'update_checker.dart';
+import 'update_settings_page.dart';
 
 const navy = beInk, teal = beBlue, canvas = beBackground, ink = beInk;
 String currencySymbol(String code) => switch (code) {
@@ -239,6 +240,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   int tab = 0;
   final visitedTabs = <int>{0};
   bool _generating = false;
+  bool _showAccountBalances = true;
   String search = '',
       accountFilter = '',
       categoryFilter = '',
@@ -262,7 +264,11 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   Future<void> _checkForUpdates() async {
     final checker = UpdateChecker();
     try {
-      final update = await checker.check(appVersion);
+      final prefs = await SharedPreferences.getInstance();
+      final source = prefs.getString(updateSourcePreferenceKey) == 'markdown'
+          ? UpdateSource.markdown
+          : UpdateSource.github;
+      final update = await checker.check(appVersion, source: source);
       if (!mounted || update == null) return;
       await showDialog<void>(
         context: context,
@@ -597,6 +603,10 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       Navigator.of(context).push(
         MaterialPageRoute<void>(builder: (_) => RatesPage(ledger: ledger)),
       );
+    } else if (value == 'updates') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => const UpdateSettingsPage()),
+      );
     } else if (value == 'ai-settings') {
       Navigator.of(context).push(
         MaterialPageRoute<void>(builder: (_) => AiSettingsPage(ledger: ledger)),
@@ -898,56 +908,87 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                         onChanged: (v) => setState(() => search = v),
                       ),
                       const SizedBox(height: 10),
-                      DropdownButtonFormField<String>(
-                        initialValue:
-                            ledger.accounts.any((a) => a.id == accountFilter)
-                            ? accountFilter
-                            : '',
-                        decoration: const InputDecoration(labelText: '账户筛选'),
-                        items: [
-                          const DropdownMenuItem(
-                            value: '',
-                            child: Text('全部账户'),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              initialValue:
+                                  ledger.accounts.any(
+                                    (a) => a.id == accountFilter,
+                                  )
+                                  ? accountFilter
+                                  : '',
+                              isExpanded: true,
+                              menuMaxHeight: 360,
+                              decoration: const InputDecoration(
+                                labelText: '账户',
+                                prefixIcon: Icon(
+                                  Icons.account_balance_wallet_outlined,
+                                ),
+                              ),
+                              items: [
+                                const DropdownMenuItem(
+                                  value: '',
+                                  child: Text('全部账户'),
+                                ),
+                                ...ledger.accounts.map(
+                                  (a) => DropdownMenuItem(
+                                    value: a.id,
+                                    child: Text(
+                                      a.name,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              onChanged: (v) =>
+                                  setState(() => accountFilter = v ?? ''),
+                            ),
                           ),
-                          ...ledger.accounts.map(
-                            (a) => DropdownMenuItem(
-                              value: a.id,
-                              child: Text(a.name),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              key: ValueKey('bill-category-$categoryFilter'),
+                              initialValue: effectiveCategoryFilter,
+                              isExpanded: true,
+                              menuMaxHeight: 360,
+                              decoration: const InputDecoration(
+                                labelText: '分类',
+                                prefixIcon: Icon(Icons.category_outlined),
+                              ),
+                              items: [
+                                const DropdownMenuItem(
+                                  value: '',
+                                  child: Text('全部分类'),
+                                ),
+                                ...ledger
+                                    .categoriesFor(false)
+                                    .map(
+                                      (v) => DropdownMenuItem(
+                                        value: '0:$v',
+                                        child: Text(
+                                          '支出 · $v',
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ),
+                                ...ledger
+                                    .categoriesFor(true)
+                                    .map(
+                                      (v) => DropdownMenuItem(
+                                        value: '1:$v',
+                                        child: Text(
+                                          '收入 · $v',
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ),
+                              ],
+                              onChanged: (v) =>
+                                  setState(() => categoryFilter = v ?? ''),
                             ),
                           ),
                         ],
-                        onChanged: (v) =>
-                            setState(() => accountFilter = v ?? ''),
-                      ),
-                      const SizedBox(height: 10),
-                      DropdownButtonFormField<String>(
-                        key: ValueKey('bill-category-$categoryFilter'),
-                        initialValue: effectiveCategoryFilter,
-                        decoration: const InputDecoration(labelText: '分类筛选'),
-                        items: [
-                          const DropdownMenuItem(
-                            value: '',
-                            child: Text('全部分类'),
-                          ),
-                          ...ledger
-                              .categoriesFor(false)
-                              .map(
-                                (v) => DropdownMenuItem(
-                                  value: '0:$v',
-                                  child: Text('支出 · $v'),
-                                ),
-                              ),
-                          ...ledger
-                              .categoriesFor(true)
-                              .map(
-                                (v) => DropdownMenuItem(
-                                  value: '1:$v',
-                                  child: Text('收入 · $v'),
-                                ),
-                              ),
-                        ],
-                        onChanged: (v) =>
-                            setState(() => categoryFilter = v ?? ''),
                       ),
                       Row(
                         children: [
@@ -1020,6 +1061,19 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           IconButton.filledTonal(
+                            onPressed: () => setState(
+                              () =>
+                                  _showAccountBalances = !_showAccountBalances,
+                            ),
+                            tooltip: _showAccountBalances ? '隐藏账户余额' : '显示账户余额',
+                            icon: Icon(
+                              _showAccountBalances
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton.filledTonal(
                             onPressed: () => Navigator.of(context).push(
                               MaterialPageRoute<void>(
                                 builder: (_) => WalletPage(ledger: ledger),
@@ -1085,7 +1139,9 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                               ),
                             ),
                             Text(
-                              '${currencySymbol(a.currency)} ${money(ledger.balance(a.id))}',
+                              _showAccountBalances
+                                  ? '${currencySymbol(a.currency)} ${money(ledger.balance(a.id))}'
+                                  : '••••••',
                               style: const TextStyle(
                                 fontWeight: FontWeight.w800,
                                 fontSize: 18,
@@ -1094,14 +1150,40 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                             ),
                             PopupMenuButton<String>(
                               tooltip: '账户操作',
-                              onSelected: (value) {
+                              onSelected: (value) async {
                                 if (value == 'edit') {
                                   addAccount(a);
-                                } else {
+                                } else if (value == 'delete') {
                                   deleteAccount(a);
+                                } else {
+                                  try {
+                                    await ledger.moveAccount(
+                                      a.id,
+                                      value == 'up' ? -1 : 1,
+                                    );
+                                  } catch (_) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(this.context)
+                                          .showSnackBar(
+                                            const SnackBar(
+                                              content: Text('账户排序失败，请重试'),
+                                            ),
+                                          );
+                                    }
+                                  }
                                 }
                               },
-                              itemBuilder: (_) => const [
+                              itemBuilder: (_) => [
+                                if (ledger.accounts.first.id != a.id)
+                                  const PopupMenuItem(
+                                    value: 'up',
+                                    child: Text('上移'),
+                                  ),
+                                if (ledger.accounts.last.id != a.id)
+                                  const PopupMenuItem(
+                                    value: 'down',
+                                    child: Text('下移'),
+                                  ),
                                 PopupMenuItem(
                                   value: 'edit',
                                   child: Text('编辑账户'),
@@ -1350,12 +1432,26 @@ class EntryTile extends StatelessWidget {
           onTap: onEdit,
           title: Text(
             entry.category,
+            maxLines: 2,
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
-          subtitle: Text(
-            '${entry.pending ? '待付款 · 点击标记为已付款 · ' : ''}$name · ${entry.date.year}/${entry.date.month.toString().padLeft(2, '0')}/${entry.date.day.toString().padLeft(2, '0')}${entry.note.isEmpty ? '' : ' · ${entry.note}'}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 4),
+              Text(name, maxLines: 2, softWrap: true),
+              Text(
+                '${entry.date.year}/${entry.date.month.toString().padLeft(2, '0')}/${entry.date.day.toString().padLeft(2, '0')}',
+                style: const TextStyle(fontSize: 12, color: beMuted),
+              ),
+              if (entry.pending)
+                const Text(
+                  '待付款 · 点击标记为已付款',
+                  style: TextStyle(color: beBlue, fontSize: 12),
+                ),
+              if (entry.note.isNotEmpty)
+                Text(entry.note, maxLines: 2, overflow: TextOverflow.ellipsis),
+            ],
           ),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
@@ -1666,18 +1762,46 @@ class _ReportViewState extends State<ReportView> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
-        const PageTitle('统计', '按时间和账户查看收支'),
-        const SizedBox(height: 10),
-        DropdownButtonFormField<String>(
-          initialValue: currency,
-          decoration: const InputDecoration(labelText: '统计币种'),
-          items: Account.supportedCurrencies
-              .map((v) => DropdownMenuItem(value: v, child: Text(v)))
-              .toList(),
-          onChanged: (v) => setState(() {
-            currency = v!;
-            account = '';
-          }),
+        Row(
+          children: [
+            const Expanded(child: PageTitle('统计', '按时间和账户查看收支')),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: BoxDecoration(
+                color: beSurface,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: currency,
+                  isDense: true,
+                  icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+                  items: Account.supportedCurrencies
+                      .map(
+                        (v) => DropdownMenuItem(
+                          value: v,
+                          child: Text(
+                            v,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) {
+                      setState(() {
+                        currency = v;
+                        account = '';
+                      });
+                    }
+                  },
+                ),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 12),
         Card(

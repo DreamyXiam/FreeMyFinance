@@ -55,6 +55,22 @@ class AndroidAppIconSource implements AppIconSource {
       '';
 }
 
+Future<String?> matchInstalledAccountIcon(
+  String accountName,
+  AppIconSource source,
+) async {
+  final query = accountName.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  if (query.isEmpty) return null;
+  final apps = await source.listApps();
+  for (final app in apps) {
+    final name = app.name.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+    if (name.isNotEmpty && (name.contains(query) || query.contains(name))) {
+      return source.loadIcon(app.packageName);
+    }
+  }
+  return null;
+}
+
 Future<String?> showAccountIconPicker(
   BuildContext context, {
   required String accountName,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'be_ui.dart';
+import 'update_checker.dart';
 
 Future<String?> showBeToolsMenu(BuildContext context) {
   final reduced = MediaQuery.disableAnimationsOf(context);
@@ -48,6 +49,14 @@ const _groups = <String, List<_ToolItem>>{
   '隐私与安全': [
     _ToolItem('lock', '应用锁', '使用设备身份验证', Icons.lock_outline_rounded),
     _ToolItem('storage-security', '本地账本加密', '管理设备内数据保护', Icons.shield_outlined),
+  ],
+  '关于应用': [
+    _ToolItem(
+      'updates',
+      '更新设置',
+      '选择 GitHub 或仓库备用下载源',
+      Icons.system_update_alt_rounded,
+    ),
   ],
 };
 
@@ -127,6 +136,13 @@ class _ToolsSheet extends StatelessWidget {
             ),
           ),
         ],
+        const SizedBox(height: 20),
+        const Center(
+          child: Text(
+            'FreeMyFinance  v$appVersion',
+            style: TextStyle(color: beMuted, fontSize: 12),
+          ),
+        ),
       ],
     ),
   );
