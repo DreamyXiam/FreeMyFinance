@@ -1,10 +1,12 @@
 import 'dart:math' as math;
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import 'be_ui.dart';
 import 'ledger.dart';
 import 'account_icon.dart';
+import 'card_artwork_cache.dart';
 
 const _bg = beBackground, _ink = beInk;
 String _symbol(String c) => switch (c) {
@@ -415,7 +417,13 @@ class _WalletPageState extends State<WalletPage>
 class WalletCard extends StatelessWidget {
   final Account account;
   final int balance;
-  const WalletCard({super.key, required this.account, required this.balance});
+  final bool cacheArtwork;
+  const WalletCard({
+    super.key,
+    required this.account,
+    required this.balance,
+    this.cacheArtwork = true,
+  });
   @override
   Widget build(BuildContext context) {
     return Semantics(
@@ -460,11 +468,13 @@ class WalletCard extends StatelessWidget {
                   ),
                 ),
               if (account.imageUrl.isNotEmpty)
-                Image.network(
-                  account.imageUrl,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                ),
+                cacheArtwork
+                    ? _StoredArtwork(url: account.imageUrl)
+                    : Image.network(
+                        account.imageUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      ),
               const DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
@@ -589,4 +599,44 @@ class WalletCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _StoredArtwork extends StatefulWidget {
+  final String url;
+  const _StoredArtwork({required this.url});
+
+  @override
+  State<_StoredArtwork> createState() => _StoredArtworkState();
+}
+
+class _StoredArtworkState extends State<_StoredArtwork> {
+  late Future<File?> _file;
+
+  @override
+  void initState() {
+    super.initState();
+    _file = CardArtworkCache.instance.get(widget.url);
+  }
+
+  @override
+  void didUpdateWidget(covariant _StoredArtwork oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _file = CardArtworkCache.instance.get(widget.url);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<File?>(
+    future: _file,
+    builder: (context, snapshot) {
+      final file = snapshot.data;
+      if (file == null) return const SizedBox.shrink();
+      return Image.file(
+        file,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+      );
+    },
+  );
 }

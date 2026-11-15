@@ -7,6 +7,7 @@ import 'package:local_auth/local_auth.dart';
 import 'card_number_store.dart';
 import 'card_catalog_page.dart';
 import 'card_catalog.dart';
+import 'card_artwork_cache.dart';
 
 import 'be_ui.dart';
 import 'ledger.dart';
@@ -297,6 +298,9 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
             : _cardNumber.text.trim(),
         update: widget.account != null,
       );
+      if (_isCard && a.imageUrl.isNotEmpty) {
+        unawaited(CardArtworkCache.instance.get(a.imageUrl));
+      }
       if (mounted) Navigator.pop(context, true);
     } on CardCleanupWarning {
       if (mounted) {
@@ -480,6 +484,7 @@ class _AccountEditorPageState extends State<AccountEditorPage> {
                 child: WalletCard(
                   account: preview,
                   balance: opening + adjustment,
+                  cacheArtwork: old != null && _previewUrl == old.imageUrl,
                 ),
               ),
               _section('账户图标', [
