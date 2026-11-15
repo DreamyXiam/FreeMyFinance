@@ -51,6 +51,7 @@ void main() {
             expense: '¥ 0.00',
             currencies: const ['CNY'],
             onCurrencyChanged: (_) {},
+            onToggleBalance: () {},
           ),
         ),
       ),
@@ -58,5 +59,37 @@ void main() {
     await t.pumpAndSettle();
     expect(t.takeException(), isNull);
     expect(find.text('¥ 999999999999.99'), findsOneWidget);
+  });
+
+  testWidgets('balance eye hides amount and estimated total', (t) async {
+    var visible = true;
+    await t.pumpWidget(
+      MaterialApp(
+        home: StatefulBuilder(
+          builder: (context, setState) => Scaffold(
+            body: BeBalanceCard(
+              currency: 'CNY',
+              balance: '¥ 123.45',
+              income: '¥ 2.00',
+              expense: '¥ 1.00',
+              estimate: '总余额 ¥ 123.45',
+              currencies: const ['CNY'],
+              onCurrencyChanged: (_) {},
+              showBalance: visible,
+              onToggleBalance: () => setState(() => visible = !visible),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.text('¥ 123.45'), findsOneWidget);
+    await t.tap(find.byTooltip('隐藏账户余额'));
+    await t.pumpAndSettle();
+    expect(find.text('¥ 123.45'), findsNothing);
+    expect(find.text('总余额 ¥ 123.45'), findsNothing);
+    expect(find.text('••••••'), findsOneWidget);
+    await t.tap(find.byTooltip('显示账户余额'));
+    await t.pumpAndSettle();
+    expect(find.text('¥ 123.45'), findsOneWidget);
   });
 }

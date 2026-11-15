@@ -214,6 +214,8 @@ class BeBalanceCard extends StatelessWidget {
   final String currency, balance, income, expense;
   final List<String> currencies;
   final ValueChanged<String> onCurrencyChanged;
+  final bool showBalance;
+  final VoidCallback? onToggleBalance;
   final String? estimate;
   const BeBalanceCard({
     super.key,
@@ -223,6 +225,8 @@ class BeBalanceCard extends StatelessWidget {
     required this.expense,
     required this.currencies,
     required this.onCurrencyChanged,
+    this.showBalance = true,
+    this.onToggleBalance,
     this.estimate,
   });
   @override
@@ -280,6 +284,16 @@ class BeBalanceCard extends StatelessWidget {
                   ],
                 ),
               ),
+              if (onToggleBalance != null)
+                IconButton(
+                  onPressed: onToggleBalance,
+                  tooltip: showBalance ? '隐藏账户余额' : '显示账户余额',
+                  icon: Icon(
+                    showBalance
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                  ),
+                ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10),
                 decoration: BoxDecoration(
@@ -323,11 +337,11 @@ class BeBalanceCard extends StatelessWidget {
                 : const Duration(milliseconds: 220),
             switchInCurve: Curves.easeOutCubic,
             child: FittedBox(
-              key: ValueKey(balance),
+              key: ValueKey(showBalance ? balance : 'hidden'),
               alignment: Alignment.centerLeft,
               fit: BoxFit.scaleDown,
               child: Text(
-                balance,
+                showBalance ? balance : '••••••',
                 style: const TextStyle(
                   fontSize: 34,
                   letterSpacing: -1,
@@ -340,7 +354,7 @@ class BeBalanceCard extends StatelessWidget {
           if (estimate != null) ...[
             const SizedBox(height: 8),
             Text(
-              estimate!,
+              showBalance ? estimate! : '总余额已隐藏',
               style: const TextStyle(color: beMuted, fontSize: 11),
             ),
           ],

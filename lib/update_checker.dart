@@ -2,11 +2,13 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-const appVersion = '1.0.2';
+const appVersion = '1.0.3';
 
 enum UpdateSource { github, markdown }
 
 const updateSourcePreferenceKey = 'update_source';
+UpdateSource preferredUpdateSource(String? stored) =>
+    stored == 'github' ? UpdateSource.github : UpdateSource.markdown;
 
 class AvailableUpdate {
   final String version, url, notes;
@@ -55,6 +57,23 @@ class UpdateChecker {
     }
     if (_compare(version, installedVersion) <= 0) return null;
     var downloadUrl = url.toString();
+    if (source == UpdateSource.github) {
+      final assets = data['assets'] as List<dynamic>? ?? [];
+      final apk = assets.cast<Map<String, dynamic>>().firstWhere(
+        (asset) => (asset['name'] as String? ?? '').endsWith('.apk'),
+        orElse: () => throw const FormatException('发布页缺少 Android APK'),
+      );
+      final assetUrl = Uri.tryParse(
+        apk['browser_download_url'] as String? ?? '',
+      );
+      if (assetUrl == null ||
+          assetUrl.scheme != 'https' ||
+          assetUrl.host != 'github.com' ||
+          !assetUrl.path.endsWith('.apk')) {
+        throw const FormatException('APK 下载链接无效');
+      }
+      downloadUrl = assetUrl.toString();
+    }
     if (source == UpdateSource.markdown) {
       final manifest = await client
           .get(

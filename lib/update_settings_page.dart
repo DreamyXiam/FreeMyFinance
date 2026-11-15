@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'update_checker.dart';
+import 'update_download.dart';
 
 class UpdateSettingsPage extends StatefulWidget {
   const UpdateSettingsPage({super.key});
@@ -11,7 +12,7 @@ class UpdateSettingsPage extends StatefulWidget {
 }
 
 class _UpdateSettingsPageState extends State<UpdateSettingsPage> {
-  UpdateSource source = UpdateSource.github;
+  UpdateSource source = UpdateSource.markdown;
   bool checking = false;
   String? status;
 
@@ -21,9 +22,9 @@ class _UpdateSettingsPageState extends State<UpdateSettingsPage> {
     SharedPreferences.getInstance().then((prefs) {
       if (mounted) {
         setState(() {
-          source = prefs.getString(updateSourcePreferenceKey) == 'markdown'
-              ? UpdateSource.markdown
-              : UpdateSource.github;
+          source = preferredUpdateSource(
+            prefs.getString(updateSourcePreferenceKey),
+          );
         });
       }
     });
@@ -50,10 +51,14 @@ class _UpdateSettingsPageState extends State<UpdateSettingsPage> {
       final update = await checker.check(appVersion, source: source);
       if (mounted) {
         setState(
-          () => status = update == null
-              ? '当前已是最新版'
-              : '发现 ${update.version}：${update.url}',
+          () => status = update == null ? '当前已是最新版' : '发现 ${update.version}',
         );
+        if (update != null) {
+          await showDialog<void>(
+            context: context,
+            builder: (_) => UpdatePrompt(update: update),
+          );
+        }
       }
     } catch (_) {
       if (mounted) setState(() => status = '检查失败，请确认网络或仓库中的备用链接');

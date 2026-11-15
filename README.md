@@ -13,7 +13,7 @@ FreeMyFinance 是面向 Android 和 iOS 的个人记账应用，Android 正式�
 - 支持每月周期规则，可在应用内手动生成到期账单；可单独启用安卓每日记账提醒，实际送达受通知权限与省电策略影响。
 - 查看账户余额、可切换月份的日历收支视图和最近账单；每天分别标出收入与支出。
 - 概览显示当前币种的账户总余额及人民币参考折合；统计币种可在统计标题旁切换。账单的分类、账户和日期分行显示，账单筛选按账户及分类并排排列。
-- 启动时根据 GitHub 最新正式版检查更新；在“工具与设置 → 更新设置”可选 GitHub Release 或仓库内 [update_sources.md](update_sources.md) 配置的 HTTPS 备用下载链接。备用链接由维护者手动编辑，版本号仍以 GitHub Release 为准；通知提供下载地址供复制。工具与设置底部显示当前版本。
+- 启动时根据 GitHub 最新正式版检查更新；在“工具与设置 → 更新设置”可选 GitHub Release 或仓库内 [update_sources.md](update_sources.md) 配置的 HTTPS 备用 APK 链接，新安装默认选择备用源。Android 可在更新弹窗内下载、查看进度并调起系统安装器；也可复制链接。备用链接由维护者手动编辑，版本号仍以 GitHub Release 为准。工具与设置底部显示当前版本。
 - 统计页可使用个人 DeepSeek API Key 分析当前筛选范围的收支与分类汇总。右上角“工具与设置”中的“AI 分析设置”可保存 Key、编辑或恢复预设提示词。用户确认后才发送汇总；不发送卡号、账户名、备注或逐笔账单。调用可能产生 API 费用。
 - AI 分析结果可在统计页的“历史记录”中查看和删除，包含当时的提示词与汇总；记录随本地账本备份，并受已启用的本地账本加密保护。API Key 只保存在设备安全存储中，不随备份导出。
 - 添加账户时可填写 HTTPS 卡面图片地址；加载失败时显示默认图标。
@@ -36,7 +36,7 @@ flutter run
 
 ## 状态
 
-Android 1.0.1 已在 Android 16 上验证覆盖安装和启动。1.0.2 的 APK 已构建并签名；[下载最新 Android APK](https://github.com/DreamyXiam/FreeMyFinance/releases/latest)。iOS 仍需在 macOS 上构建验证。账户余额由初始余额和手工录入的账目计算，不连接银行，也不会自动同步交易。
+Android 1.0.2 已发布；1.0.3 APK 已构建并签名，待发布。[下载最新 Android APK](https://github.com/DreamyXiam/FreeMyFinance/releases/latest)。iOS 仍需在 macOS 上构建验证。账户余额由初始余额和手工录入的账目计算，不连接银行，也不会自动同步交易。
 
 ## 许可证
 

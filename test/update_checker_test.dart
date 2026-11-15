@@ -6,6 +6,12 @@ import 'package:http/testing.dart';
 import 'package:free_my_finance/update_checker.dart';
 
 void main() {
+  test('missing preference defaults to repository download source', () {
+    expect(preferredUpdateSource(null), UpdateSource.markdown);
+    expect(preferredUpdateSource('github'), UpdateSource.github);
+    expect(preferredUpdateSource('markdown'), UpdateSource.markdown);
+  });
+
   test(
     'alternative source reads a download URL from the repository Markdown',
     () async {
@@ -83,13 +89,24 @@ void main() {
               'tag_name': 'v1.1.0',
               'html_url': 'https://github.com/DreamyXiam/FreeMyFinance/releases/tag/v1.1.0',
               'body': '更新说明',
+              'assets': [
+                {
+                  'name': 'FreeMyFinance-v1.1.0-android.apk',
+                  'browser_download_url': 'https://github.com/DreamyXiam/FreeMyFinance/releases/download/v1.1.0/app.apk',
+                },
+              ],
             }),
           ),
           200,
         );
       }),
     );
-    expect((await checker.check('1.0.0'))?.version, '1.1.0');
+    final update = await checker.check('1.0.0');
+    expect(update?.version, '1.1.0');
+    expect(
+      update?.url,
+      'https://github.com/DreamyXiam/FreeMyFinance/releases/download/v1.1.0/app.apk',
+    );
     expect(await checker.check('1.1.0'), isNull);
     expect(await checker.check('2.0.0'), isNull);
     checker.close();

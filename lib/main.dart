@@ -1,9 +1,9 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -28,6 +28,7 @@ import 'category_swipe_tile.dart';
 import 'account_icon.dart';
 import 'lock_controller.dart';
 import 'update_checker.dart';
+import 'update_download.dart';
 import 'update_settings_page.dart';
 
 const navy = beInk, teal = beBlue, canvas = beBackground, ink = beInk;
@@ -265,39 +266,14 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     final checker = UpdateChecker();
     try {
       final prefs = await SharedPreferences.getInstance();
-      final source = prefs.getString(updateSourcePreferenceKey) == 'markdown'
-          ? UpdateSource.markdown
-          : UpdateSource.github;
+      final source = preferredUpdateSource(
+        prefs.getString(updateSourcePreferenceKey),
+      );
       final update = await checker.check(appVersion, source: source);
       if (!mounted || update == null) return;
       await showDialog<void>(
         context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text('发现新版本 ${update.version}'),
-          content: SingleChildScrollView(
-            child: Text(
-              update.notes.isEmpty ? '新版本已在 GitHub Releases 发布。' : update.notes,
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('稍后'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: update.url));
-                if (dialogContext.mounted) Navigator.pop(dialogContext);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('下载链接已复制，请在浏览器打开')),
-                  );
-                }
-              },
-              child: const Text('复制下载链接'),
-            ),
-          ],
-        ),
+        builder: (_) => UpdatePrompt(update: update),
       );
     } catch (_) {
       // Offline startup must remain usable.
@@ -814,6 +790,10 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
                   currencies: Account.supportedCurrencies,
                   onCurrencyChanged: (value) =>
                       setState(() => displayCurrency = value),
+                  showBalance: _showAccountBalances,
+                  onToggleBalance: () => setState(
+                    () => _showAccountBalances = !_showAccountBalances,
+                  ),
                   estimate:
                       !ledger.accounts.any(
                         (a) => a.currency != 'CNY' && a.includeInNetWorth,
